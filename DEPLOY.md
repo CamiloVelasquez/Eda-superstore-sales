@@ -13,14 +13,23 @@ GitHub Actions
       │                                      Security Group
       │                                      Elastic IP
       │                                      IAM Role (SSM)
+      │                                      Docker + Buildx + Compose (UserData)
       │
-      └─ 2-deploy.yml ─► SSM Run Command ──► Docker Compose
-                          (sin SSH keys)       ├── mlflow  :5000
-                                               ├── trainer (run once)
-                                               └── streamlit :8501
+      └─ 2-deploy.yml
+            │
+            ├─ Job 1: build ──► Construye imagen Docker (runner GitHub)
+            │                   └── Push → ghcr.io/<repo>:latest (GHCR)
+            │
+            └─ Job 2: deploy ─► SSM Run Command ──► docker pull (desde GHCR)
+                                 (sin SSH keys)       docker compose up -d
+                                                       ├── mlflow  :5000
+                                                       ├── trainer (run once)
+                                                       └── streamlit :8501
 ```
 
 Los workflows se comunican con la EC2 a través de **AWS Systems Manager (SSM)**, sin necesidad de abrir el puerto SSH ni manejar archivos `.pem`.
+
+La imagen Docker se construye en el **runner de GitHub Actions** (más rápido que la EC2) y se almacena en **GitHub Container Registry (GHCR)**, gratuito para repositorios públicos.
 
 ---
 
@@ -66,6 +75,8 @@ Este usuario será el que GitHub Actions usará para operar en tu cuenta.
 | `AWS_ACCESS_KEY_ID` | `AKIAIOSFODNN7EXAMPLE` | Access Key del usuario IAM |
 | `AWS_SECRET_ACCESS_KEY` | `wJalrXUtnFEMI/K7MDENG/...` | Secret Key del usuario IAM |
 | `AWS_REGION` | `us-east-1` | Región donde se creará la EC2 |
+
+> El token para publicar en GHCR (`GITHUB_TOKEN`) es **automático** — GitHub lo genera en cada ejecución del workflow, no necesitas crearlo manualmente.
 
 **Regiones recomendadas (free tier disponible en todas):**
 - `us-east-1` — Norte de Virginia (más recursos gratuitos)
@@ -114,17 +125,17 @@ Ve a **Actions → 2 · Deploy a EC2 → Run workflow**.
 
 ### Qué hace el workflow de deploy
 
-1. Conecta con la EC2 via SSM (sin SSH)
-2. Instala Docker y Docker Compose si no están presentes
-3. Configura swap (1 GB extra) para no quedarse sin memoria
-4. Clona o actualiza el repositorio en `/opt/superstore-sales`
-5. Ejecuta `docker compose up --build -d`
-6. La primera vez, el servicio `trainer` entrena los 3 modelos (~3-5 minutos)
-7. Streamlit queda disponible cuando el trainer termina
+**Job 1 — build** (corre en el runner de GitHub Actions):
+1. Construye la imagen Docker con todas las dependencias ML
+2. La publica en `ghcr.io/<tu-usuario>/eda-superstore-sales:latest`
+3. Usa caché de capas: si el `Dockerfile` o `pyproject.toml` no cambiaron, reutiliza capas anteriores
 
-**Duración estimada:**
-- Primer deploy: ~8-12 minutos (incluye instalación de Docker y entrenamiento)
-- Deploys siguientes: ~3-5 minutos (solo actualiza código, no re-entrena)
+**Job 2 — deploy** (corre contra la EC2 via SSM):
+1. Clona o actualiza el repositorio en `/opt/superstore-sales`
+2. Descarga la imagen recién publicada desde GHCR (`docker pull`)
+3. Reinicia los servicios con `docker compose up -d` (sin reconstruir)
+4. La primera vez, el servicio `trainer` entrena los 3 modelos
+5. Streamlit queda disponible cuando el trainer termina
 
 ---
 
@@ -152,10 +163,10 @@ Modificas código
 git push origin main
       │
       ▼
-GitHub Actions dispara "2 · Deploy" automáticamente
+Job 1: GitHub Actions construye imagen → la sube a GHCR
       │
       ▼
-La EC2 actualiza el código y reinicia los servicios
+Job 2: EC2 descarga imagen desde GHCR → reinicia servicios
       │
       ▼
 App disponible en la misma URL (IP fija)
@@ -173,13 +184,13 @@ Los archivos ignorados por el workflow (no disparan deploy):
 ```
 .github/
   workflows/
-    1-infra.yml      ← Crea/destruye infraestructura (manual)
-    2-deploy.yml     ← Despliega la app (automático en push a main)
+    1-infra.yml       ← Crea/destruye infraestructura (manual)
+    2-deploy.yml      ← Job build (GHCR) + Job deploy (EC2) en push a main
 infra/
-  cloudformation.yml ← Definición de toda la infraestructura AWS
+  cloudformation.yml  ← EC2 + SG + Elastic IP + IAM + Docker via UserData
 scripts/
-  setup.sh           ← Instala Docker en la EC2 (idempotente)
-  deploy.sh          ← Actualiza código y levanta Docker Compose
+  setup.sh            ← Referencia: instalación Docker (ya integrada en UserData)
+  deploy.sh           ← Referencia: lógica de deploy (ya integrada en el workflow)
 ```
 
 ---

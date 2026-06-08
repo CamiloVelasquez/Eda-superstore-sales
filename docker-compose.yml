@@ -10,7 +10,7 @@
 services:
   mlflow:
     build: .
-    image: superstore-mlops:latest
+    image: ${IMAGE_NAME:-superstore-mlops:latest}
     command: >
       uv run mlflow server
       --host 0.0.0.0 --port 5000
@@ -29,7 +29,7 @@ services:
 
   trainer:
     build: .
-    image: superstore-mlops:latest
+    image: ${IMAGE_NAME:-superstore-mlops:latest}
     command: uv run python model_pipeline.py
     environment:
       MLFLOW_TRACKING_URI: http://mlflow:5000
@@ -41,7 +41,7 @@ services:
 
   streamlit:
     build: .
-    image: superstore-mlops:latest
+    image: ${IMAGE_NAME:-superstore-mlops:latest}
     command: >
       uv run streamlit run streamlit_app.py
       --server.port=8501 --server.address=0.0.0.0
