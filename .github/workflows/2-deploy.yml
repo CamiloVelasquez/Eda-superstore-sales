@@ -149,6 +149,10 @@ jobs:
           REPO_URL="${{ github.server_url }}/${{ github.repository }}.git"
           APP_DIR="/opt/superstore-sales"
           IMAGE="${{ needs.build.outputs.image }}"
+          PUBLIC_IP=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --query 'Stacks[0].Outputs[?OutputKey==`PublicIP`].OutputValue' \
+            --output text)
 
           CMD_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
@@ -159,7 +163,7 @@ jobs:
               \"cd $APP_DIR\",
               \"docker pull $IMAGE\",
               \"docker compose down --remove-orphans 2>/dev/null || true\",
-              \"IMAGE_NAME=$IMAGE docker compose up -d\",
+              \"IMAGE_NAME=$IMAGE PUBLIC_HOST=$PUBLIC_IP docker compose up -d\",
               \"sleep 8 && docker compose ps\"
             ],executionTimeout=[\"600\"]" \
             --comment "Deploy ${{ github.ref_name }}@${{ github.sha }}" \

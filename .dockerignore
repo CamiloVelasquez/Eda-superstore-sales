@@ -18,8 +18,7 @@ mlflow.db
 mlruns*.db
 
 # Material de EDA no necesario para entrenar/servir (imagen más liviana)
-superstore_eda.ipynb
-us-states.json
+notebooks/
 
 # Salida local
 *.log

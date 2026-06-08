@@ -1,4 +1,3 @@
-# Imagen única usada por los tres servicios (mlflow, trainer, streamlit).
 FROM python:3.12-slim
 
 # uv para instalar dependencias desde el lockfile
@@ -24,5 +23,5 @@ RUN uv sync --frozen --no-dev
 EXPOSE 8501 5000
 
 # Por defecto sirve la app; docker-compose sobreescribe 'command' por servicio.
-CMD ["uv", "run", "streamlit", "run", "streamlit_app.py", \
+CMD ["uv", "run", "streamlit", "run", "src/app.py", \
      "--server.port=8501", "--server.address=0.0.0.0"]

@@ -22,9 +22,10 @@ GitHub Actions
             │
             └─ Job 2: deploy ─► SSM Run Command ──► docker pull (desde GHCR)
                                  (sin SSH keys)       docker compose up -d
-                                                       ├── mlflow  :5000
-                                                       ├── trainer (run once)
+                                                       ├── mlflow    :5000
                                                        └── streamlit :8501
+                                                             └── botón "Entrenar"
+                                                                   └── model_pipeline.py
 ```
 
 Los workflows se comunican con la EC2 a través de **AWS Systems Manager (SSM)**, sin necesidad de abrir el puerto SSH ni manejar archivos `.pem`.
@@ -134,8 +135,8 @@ Ve a **Actions → 2 · Deploy a EC2 → Run workflow**.
 1. Clona o actualiza el repositorio en `/opt/superstore-sales`
 2. Descarga la imagen recién publicada desde GHCR (`docker pull`)
 3. Reinicia los servicios con `docker compose up -d` (sin reconstruir)
-4. La primera vez, el servicio `trainer` entrena los 3 modelos
-5. Streamlit queda disponible cuando el trainer termina
+4. Streamlit queda disponible en cuanto MLflow responde al healthcheck
+5. Si no hay modelo entrenado, la app muestra un botón para entrenar desde la interfaz
 
 ---
 
@@ -219,7 +220,10 @@ La instancia recién creada tarda ~3 minutos en iniciar el agente SSM. Si falla,
 El workflow de deploy requiere que la infraestructura exista. Ejecuta primero el **workflow 1** con la acción `deploy`.
 
 ### Streamlit no carga después del deploy
-El trainer puede tardar hasta 5 minutos en entrenar los modelos. Espera y recarga la página. También puedes revisar los logs en el resumen del workflow.
+Streamlit arranca en cuanto MLflow está sano (~60 s). Si la página no responde, espera un minuto y recarga. También puedes revisar los logs en el resumen del workflow.
+
+### No hay modelo disponible al entrar a Streamlit
+Es el comportamiento esperado en el primer deploy. La app muestra un botón **"Entrenar modelo ahora"** — haz clic y el pipeline entrenará los 3 modelos (~3-5 minutos) y registrará el mejor en MLflow.
 
 ### Ver logs en tiempo real
 En AWS Console → Systems Manager → Run Command → historial de comandos. Ahí están los logs completos de cada ejecución.

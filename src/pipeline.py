@@ -1,20 +1,23 @@
-import pandas as pd
-import numpy as np
-from sklearn.model_selection import train_test_split, RandomizedSearchCV
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
-from sklearn.linear_model import LinearRegression
-from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+import json
+import logging
+import os
+import pickle
+import socket
+import warnings
+from urllib.parse import urlparse
+
 import mlflow
 import mlflow.sklearn
+import numpy as np
+import pandas as pd
 from mlflow.models import infer_signature
-import logging
-import warnings
-import os
-import socket
-from urllib.parse import urlparse
+from sklearn.compose import ColumnTransformer
+from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.model_selection import RandomizedSearchCV, train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -25,6 +28,10 @@ EXPERIMENT_NAME = "Superstore Profit Prediction"
 REGISTERED_MODEL_NAME = "SuperstoreProfitBestModel"
 DEFAULT_REMOTE_TRACKING_URI = "http://127.0.0.1:5000"
 LOCAL_TRACKING_URI = "sqlite:///mlflow.db"
+
+# Pickle export — fallback cuando MLflow no está disponible
+PICKLE_PATH = "best_model.pkl"
+PICKLE_META_PATH = "best_model_meta.json"
 
 def load_data(file_path):
     """Loads the dataset from a CSV file."""
@@ -177,7 +184,7 @@ def main():
 
     mlflow.set_experiment(EXPERIMENT_NAME)
 
-    file_path = 'sample_-_superstore.csv'
+    file_path = 'data/raw/sample_-_superstore.csv'
     df = load_data(file_path)
     df = preprocess_data(df)
 
@@ -298,6 +305,23 @@ def select_best_model(results):
         )
     except Exception as exc:  # registry may be unavailable on a file-based store
         logging.warning(f"Could not register model in the MLflow Model Registry: {exc}")
+
+    # Exportar a pickle: permite que Streamlit funcione sin servidor MLflow
+    try:
+        with open(PICKLE_PATH, "wb") as f:
+            pickle.dump(best["model"], f)
+        meta = {
+            "model_name": best["model_name"],
+            "rmse": best["rmse"],
+            "mae": best["mae"],
+            "r2": best["r2"],
+            "params": {k: str(v) for k, v in best["best_params"].items()},
+        }
+        with open(PICKLE_META_PATH, "w") as f:
+            json.dump(meta, f, indent=2)
+        logging.info(f"Best model exported to '{PICKLE_PATH}' and '{PICKLE_META_PATH}'.")
+    except Exception as exc:
+        logging.warning(f"Could not export model to pickle: {exc}")
 
     return best
 

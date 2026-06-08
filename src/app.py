@@ -10,33 +10,72 @@ permite:
   - ⭐ Ver la importancia de las variables.
 
 Requisito previo: haber entrenado los modelos al menos una vez con
-    uv run python model_pipeline.py
+    uv run python src/pipeline.py
 para que exista el modelo registrado.
 
 Ejecucion:
-    uv run streamlit run streamlit_app.py
+    uv run streamlit run src/app.py
 """
 import io
+import json
+import os
+import pickle
+import subprocess
+import sys
+from types import SimpleNamespace
 
+import matplotlib.pyplot as plt
+import mlflow
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import streamlit as st
-import mlflow
 from mlflow.tracking import MlflowClient
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
-from model_pipeline import (
+from pipeline import (
+    EXPERIMENT_NAME,
+    PICKLE_META_PATH,
+    PICKLE_PATH,
+    REGISTERED_MODEL_NAME,
     load_data,
     preprocess_data,
     setup_tracking_uri,
-    EXPERIMENT_NAME,
-    REGISTERED_MODEL_NAME,
 )
 
-DATA_PATH = "sample_-_superstore.csv"
+DATA_PATH = "data/raw/sample_-_superstore.csv"
 TARGET = "Profit"
+
+# Columnas que el modelo espera pero que se derivan de las fechas:
+# el formulario las reemplaza por dos date_input amigables.
+DATE_DERIVED = frozenset({
+    "Order_Year", "Order_Month", "Order_Day",
+    "Ship_Year", "Ship_Month", "Ship_Day",
+    "Order_Processing_Time",
+})
+
+LABELS_ES = {
+    # Numéricas directas
+    "Sales":    "Ventas ($)",
+    "Quantity": "Cantidad (unidades)",
+    "Discount": "Descuento (0.0 – 1.0)",
+    # Derivadas de fechas
+    "Order_Year":            "Fecha de pedido → año",
+    "Order_Month":           "Fecha de pedido → mes",
+    "Order_Day":             "Fecha de pedido → día",
+    "Ship_Year":             "Fecha de envío → año",
+    "Ship_Month":            "Fecha de envío → mes",
+    "Ship_Day":              "Fecha de envío → día",
+    "Order_Processing_Time": "Días hasta el envío",
+    # Categóricas
+    "Ship Mode":       "Modo de envío",
+    "Segment":         "Segmento de cliente",
+    "Country/Region":  "País / Región",
+    "State/Province":  "Estado / Provincia",
+    "Region":          "Región",
+    "Category":        "Categoría",
+    "Sub-Category":    "Subcategoría",
+}
 
 st.set_page_config(
     page_title="Superstore · Usar el mejor modelo",
@@ -69,21 +108,50 @@ def get_feature_frame():
 
 @st.cache_resource
 def load_best_model_and_meta():
-    """Carga el modelo registrado mas reciente y los metadatos de su run."""
-    client = MlflowClient()
-    versions = client.search_model_versions(f"name='{REGISTERED_MODEL_NAME}'")
-    if not versions:
-        return None, None, None
-    latest = max(versions, key=lambda v: int(v.version))
-    model = mlflow.sklearn.load_model(f"models:/{REGISTERED_MODEL_NAME}/{latest.version}")
-    run = client.get_run(latest.run_id)
-    return model, latest, run
+    """Carga el modelo: primero desde MLflow, luego desde pickle como fallback."""
+    # 1. Intentar desde MLflow
+    try:
+        client = MlflowClient()
+        versions = client.search_model_versions(f"name='{REGISTERED_MODEL_NAME}'")
+        if versions:
+            latest = max(versions, key=lambda v: int(v.version))
+            model = mlflow.sklearn.load_model(f"models:/{REGISTERED_MODEL_NAME}/{latest.version}")
+            run = client.get_run(latest.run_id)
+            return model, latest, run
+    except Exception:
+        pass
+
+    # 2. Fallback a pickle
+    if os.path.exists(PICKLE_PATH):
+        with open(PICKLE_PATH, "rb") as f:
+            model = pickle.load(f)
+        meta = {}
+        if os.path.exists(PICKLE_META_PATH):
+            with open(PICKLE_META_PATH) as f:
+                meta = json.load(f)
+        version_info = SimpleNamespace(version="local")
+        run = SimpleNamespace(
+            data=SimpleNamespace(
+                params={"model_name": meta.get("model_name", "Desconocido"), **meta.get("params", {})},
+                metrics={
+                    "rmse": meta.get("rmse", float("nan")),
+                    "mae": meta.get("mae", float("nan")),
+                    "r2_score": meta.get("r2", float("nan")),
+                },
+            )
+        )
+        return model, version_info, run
+
+    return None, None, None
 
 
 @st.cache_data
 def get_runs():
     """Tabla con todos los experimentos del estudio."""
-    return mlflow.search_runs(experiment_names=[EXPERIMENT_NAME])
+    try:
+        return mlflow.search_runs(experiment_names=[EXPERIMENT_NAME])
+    except Exception:
+        return pd.DataFrame()
 
 
 def prepare_features(raw_df, feature_columns):
@@ -109,26 +177,69 @@ tracking_uri = init_tracking()
 
 st.title("📈 Predicción de *Profit* · Mejor modelo")
 
+def _run_training():
+    """Lanza model_pipeline.py en un subprocess y retorna (ok, stderr)."""
+    env = os.environ.copy()
+    env.pop("SKIP_IF_REGISTERED", None)  # forzar re-entrenamiento aunque ya exista modelo
+    result = subprocess.run(
+        [sys.executable, "src/pipeline.py"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    return result.returncode == 0, result.stderr
+
+
 with st.sidebar:
     st.header("⚙️ MLflow")
-    st.write("**Tracking URI**")
-    st.code(tracking_uri, language=None)
+    if tracking_uri.startswith("http"):
+        # En Docker (local o AWS) el servidor MLflow corre en el mismo host público.
+        # MLFLOW_TRACKING_URI apunta al hostname interno (mlflow:5000); para mostrar
+        # la URL pública reemplazamos el host interno por el del navegador.
+        public_host = os.environ.get("PUBLIC_HOST", "localhost")
+        st.success("Servidor MLflow activo")
+        st.write(f"[Abrir MLflow UI](http://{public_host}:5000)")
+    else:
+        st.warning("Modo local — sin servidor MLflow")
+        st.caption(f"`{tracking_uri}`")
     st.write(f"**Experimento:** {EXPERIMENT_NAME}")
     st.write(f"**Modelo registrado:** {REGISTERED_MODEL_NAME}")
     if st.button("🔄 Recargar datos y modelo"):
         st.cache_data.clear()
         st.cache_resource.clear()
         st.rerun()
+    st.divider()
+    if st.button("🚀 Re-entrenar modelos", help="Entrena los 3 modelos y registra el mejor"):
+        with st.spinner("Entrenando modelos... (~3-5 minutos)"):
+            ok, stderr = _run_training()
+        if ok:
+            st.success("Entrenamiento completado.")
+            st.cache_data.clear()
+            st.cache_resource.clear()
+            st.rerun()
+        else:
+            st.error("Error durante el entrenamiento.")
+            st.code(stderr)
 
 model, version_info, best_run = load_best_model_and_meta()
 
 if model is None:
-    st.error(
-        "No se encontró ningún modelo registrado como "
-        f"`{REGISTERED_MODEL_NAME}`.\n\n"
-        "Entrena primero los modelos ejecutando:\n\n"
-        "```bash\nuv run python model_pipeline.py\n```"
+    st.warning("No se encontró ningún modelo entrenado.")
+    st.info(
+        "Entrena los modelos para comenzar a usar la aplicación. "
+        "El proceso toma ~3-5 minutos la primera vez."
     )
+    if st.button("🚀 Entrenar modelo ahora", type="primary"):
+        with st.spinner("Entrenando 3 modelos (Linear Regression, Random Forest, Gradient Boosting)..."):
+            ok, stderr = _run_training()
+        if ok:
+            st.success("¡Entrenamiento completado! Recargando...")
+            st.cache_data.clear()
+            st.cache_resource.clear()
+            st.rerun()
+        else:
+            st.error("Error durante el entrenamiento.")
+            st.code(stderr)
     st.stop()
 
 X_train, X_test, y_test = get_feature_frame()
@@ -159,40 +270,147 @@ tab_pred, tab_batch, tab_cmp, tab_diag, tab_imp = st.tabs(
 numeric_cols = X_train.select_dtypes(include=np.number).columns.tolist()
 categorical_cols = X_train.select_dtypes(include="object").columns.tolist()
 
+# Mappings geográficos derivados del dataset
+_GEO_ORDER = ["Country/Region", "State/Province", "Region"]
+_geo_cols   = [c for c in _GEO_ORDER if c in categorical_cols]
+_other_cats = [c for c in categorical_cols if c not in _geo_cols]
+
+# País → lista de estados/provincias
+country_to_states: dict = (
+    X_train.groupby("Country/Region")["State/Province"]
+    .apply(lambda s: sorted(s.dropna().unique().tolist()))
+    .to_dict()
+    if "Country/Region" in categorical_cols and "State/Province" in categorical_cols
+    else {}
+)
+# Estado → región (relación 1:1 en el dataset)
+state_to_region: dict = (
+    X_train[["State/Province", "Region"]]
+    .drop_duplicates()
+    .set_index("State/Province")["Region"]
+    .to_dict()
+    if "State/Province" in categorical_cols and "Region" in categorical_cols
+    else {}
+)
+
 # --------------------------------------------------------------------------- #
 # 1) Prediccion individual  (usar el modelo, transaccion a transaccion)
 # --------------------------------------------------------------------------- #
 with tab_pred:
     st.markdown("### Estima el *Profit* de una transacción")
-    st.caption("Ajusta los valores y el modelo ganador predice la utilidad esperada.")
+    st.caption("Completa los datos de la transacción y el modelo predice la utilidad esperada.")
 
+    other_numeric = [c for c in numeric_cols if c not in DATE_DERIVED]
+
+    # --- Geográficas FUERA del form: cada cambio filtra en tiempo real ---
+    st.markdown("**Ubicación**")
+    geo_cols_ui = st.columns(len(_geo_cols))
+    _geo_inputs: dict = {}
+    _selected_country = sorted(X_train["Country/Region"].dropna().unique())[0] if "Country/Region" in _geo_cols else None
+    _selected_state   = None
+    for i, col in enumerate(_geo_cols):
+        all_options = sorted(X_train[col].dropna().unique().tolist())
+        with geo_cols_ui[i]:
+            if col == "Country/Region":
+                _selected_country = st.selectbox(LABELS_ES.get(col, col), all_options, key="geo_country")
+                _geo_inputs[col] = _selected_country
+            elif col == "State/Province":
+                state_options = country_to_states.get(_selected_country, all_options)
+                _selected_state = st.selectbox(LABELS_ES.get(col, col), state_options, key="geo_state")
+                _geo_inputs[col] = _selected_state
+            elif col == "Region":
+                _auto_region = state_to_region.get(_selected_state, all_options[0])
+                st.selectbox(
+                    LABELS_ES.get(col, col) + " (automática)",
+                    options=[_auto_region],
+                    disabled=True,
+                    key="geo_region",
+                    help="Se determina automáticamente según el Estado / Provincia seleccionado",
+                )
+                _geo_inputs[col] = _auto_region
+
+    # --- Resto del formulario ---
     with st.form("prediction_form"):
         inputs = {}
-        st.markdown("**Variables numéricas**")
-        ncols = st.columns(3)
-        for i, col in enumerate(numeric_cols):
-            with ncols[i % 3]:
-                inputs[col] = st.number_input(col, value=float(X_train[col].median()))
 
-        st.markdown("**Variables categóricas**")
-        ccols = st.columns(3)
-        for i, col in enumerate(categorical_cols):
+        # Otras categóricas (sin geo)
+        st.markdown("**Clasificación del producto y cliente**")
+        ccols_form = st.columns(3)
+        for i, col in enumerate(_other_cats):
             options = sorted(X_train[col].dropna().unique().tolist())
-            with ccols[i % 3]:
-                inputs[col] = st.selectbox(col, options)
+            with ccols_form[i % 3]:
+                inputs[col] = st.selectbox(LABELS_ES.get(col, col), options)
+
+        # Numéricas
+        st.markdown("**Datos de la transacción**")
+        ncols_form = st.columns(3)
+        NUM_CONFIG = {
+            "Sales":    dict(min_value=0.0, step=1.0, format="%.2f"),
+            "Quantity": dict(min_value=1.0, step=1.0, format="%.0f"),
+            "Discount": dict(min_value=0.0, max_value=1.0, step=0.01, format="%.2f"),
+        }
+        for i, col in enumerate(other_numeric):
+            with ncols_form[i % 3]:
+                cfg = NUM_CONFIG.get(col, {})
+                inputs[col] = st.number_input(
+                    LABELS_ES.get(col, col),
+                    value=float(X_train[col].median()),
+                    **cfg,
+                )
+
+        # Fechas
+        st.markdown("**Fechas de la transacción**")
+        dcols = st.columns(3)
+        with dcols[0]:
+            order_date = st.date_input("Fecha de pedido", value=pd.Timestamp("2024-01-15"))
+        with dcols[1]:
+            ship_date = st.date_input("Fecha de envío", value=pd.Timestamp("2024-01-18"))
+        with dcols[2]:
+            _proc_days = (pd.Timestamp(ship_date) - pd.Timestamp(order_date)).days
+            st.number_input(
+                "Días hasta el envío (calculado)",
+                value=float(max(_proc_days, 0)),
+                disabled=True,
+                help="Calculado automáticamente: Fecha de envío − Fecha de pedido",
+            )
 
         submitted = st.form_submit_button("🚀 Predecir Profit", type="primary")
 
     if submitted:
-        row = pd.DataFrame([inputs])[X_train.columns]  # respeta el orden original
-        pred = float(model.predict(row)[0])
-        st.metric("Profit estimado", f"$ {pred:,.2f}")
-        if pred < 0:
-            st.warning("El modelo predice una **pérdida** para esta transacción.")
+        order_dt = pd.Timestamp(order_date)
+        ship_dt  = pd.Timestamp(ship_date)
+
+        if ship_dt < order_dt:
+            st.error("La fecha de envío no puede ser anterior a la fecha de pedido.")
         else:
-            st.success("El modelo predice una transacción **rentable**.")
-        with st.expander("Ver la fila enviada al modelo"):
-            st.dataframe(row, use_container_width=True)
+            inputs.update(_geo_inputs)
+            inputs["Order_Year"]            = order_dt.year
+            inputs["Order_Month"]           = order_dt.month
+            inputs["Order_Day"]             = order_dt.day
+            inputs["Ship_Year"]             = ship_dt.year
+            inputs["Ship_Month"]            = ship_dt.month
+            inputs["Ship_Day"]              = ship_dt.day
+            inputs["Order_Processing_Time"] = (ship_dt - order_dt).days
+
+            row  = pd.DataFrame([inputs])[X_train.columns]
+            pred = float(model.predict(row)[0])
+
+            st.metric("Profit estimado", f"$ {pred:,.2f}")
+            if pred < 0:
+                st.warning("El modelo predice una **pérdida**.")
+            else:
+                st.success("Transacción **rentable**.")
+
+            with st.expander("Ver todos los valores enviados al modelo"):
+                records = [
+                    {
+                        "Campo (modelo)":     c,
+                        "Campo (formulario)": LABELS_ES.get(c, c),
+                        "Valor":              row.iloc[0][c],
+                    }
+                    for c in row.columns
+                ]
+                st.table(pd.DataFrame(records).set_index("Campo (modelo)"))
 
 # --------------------------------------------------------------------------- #
 # 2) Prediccion por lotes (subir CSV -> predecir -> descargar)

@@ -1,11 +1,11 @@
 # Orquestación del proyecto MLOps Superstore.
 #
 #   mlflow    -> servidor de tracking + UI (http://localhost:5000), datos en un volumen
-#   trainer   -> entrena y registra el mejor modelo, luego termina (corre una sola vez)
-#   streamlit -> app para usar el modelo (http://localhost:8501)
+#   streamlit -> app de predicción (http://localhost:8501)
+#               Arranca en cuanto MLflow esté listo.
+#               El entrenamiento se dispara desde el botón en la interfaz.
 #
 # Uso:  docker compose up --build
-# La primera vez el 'trainer' entrena (~2-4 min); la app arranca cuando termina.
 
 services:
   mlflow:
@@ -16,6 +16,7 @@ services:
       --host 0.0.0.0 --port 5000
       --backend-store-uri sqlite:////mlflow/mlflow.db
       --artifacts-destination /mlflow/artifacts
+      --allowed-hosts mlflow,mlflow:5000,localhost,localhost:5000,127.0.0.1,0.0.0.0
     ports:
       - "5000:5000"
     volumes:
@@ -27,33 +28,19 @@ services:
       retries: 30
       start_period: 60s
 
-  trainer:
-    build: .
-    image: ${IMAGE_NAME:-superstore-mlops:latest}
-    command: uv run python model_pipeline.py
-    environment:
-      MLFLOW_TRACKING_URI: http://mlflow:5000
-      SKIP_IF_REGISTERED: "1"   # no re-entrena si ya hay un modelo registrado
-    depends_on:
-      mlflow:
-        condition: service_healthy
-    restart: "no"
-
   streamlit:
-    build: .
     image: ${IMAGE_NAME:-superstore-mlops:latest}
     command: >
-      uv run streamlit run streamlit_app.py
+      uv run streamlit run src/app.py
       --server.port=8501 --server.address=0.0.0.0
     environment:
       MLFLOW_TRACKING_URI: http://mlflow:5000
+      PUBLIC_HOST: ${PUBLIC_HOST:-localhost}
     ports:
       - "8501:8501"
     depends_on:
       mlflow:
         condition: service_healthy
-      trainer:
-        condition: service_completed_successfully
 
 volumes:
   mlflow-data:
