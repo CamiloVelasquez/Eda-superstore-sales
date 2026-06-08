@@ -59,6 +59,9 @@ Resources:
   # ── Cómputo: t3.micro free tier, Amazon Linux 2023, 30 GB EBS ──
   EC2Instance:
     Type: AWS::EC2::Instance
+    # Evita que CloudFormation reemplace o elimine la instancia en updates
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: Retain
     Properties:
       InstanceType: t3.micro
       # Última AMI de Amazon Linux 2023 via SSM Parameter Store (se actualiza automáticamente)
@@ -66,12 +69,14 @@ Resources:
       IamInstanceProfile: !Ref EC2InstanceProfile
       SecurityGroups:
         - !Ref SecurityGroup
+      # Protege contra terminación accidental desde la consola
+      DisableApiTermination: true
       BlockDeviceMappings:
         - DeviceName: /dev/xvda
           Ebs:
             VolumeSize: 30
             VolumeType: gp2
-            DeleteOnTermination: true
+            DeleteOnTermination: false
       UserData:
         Fn::Base64: |
           #!/bin/bash
