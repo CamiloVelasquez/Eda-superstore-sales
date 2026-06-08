@@ -12,4 +12,6 @@ dependencies = [
     "jupyter",
     "folium>=0.20.0",
     "pgeocode>=0.5.0",
+    "mlflow",
+    "scikit-learn"
 ]

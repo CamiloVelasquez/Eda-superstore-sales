@@ -1,3 +1,15 @@
+# MLflow
+mlruns/
+mlartifacts/
+outputs/
+mlruns*.db
+mlflow.db
+# SQLite WAL mode temporary files
+*-shm
+*-wal
+**/basic_auth.db
+mlflow/protos/protos.json
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
