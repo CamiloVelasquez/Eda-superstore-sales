@@ -63,7 +63,7 @@ Resources:
     UpdateReplacePolicy: Retain
     DeletionPolicy: Retain
     Properties:
-      InstanceType: t3.micro
+      InstanceType: t2.small
       # Última AMI de Amazon Linux 2023 via SSM Parameter Store (se actualiza automáticamente)
       ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
       IamInstanceProfile: !Ref EC2InstanceProfile

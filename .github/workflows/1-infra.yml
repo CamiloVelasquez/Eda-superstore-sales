@@ -78,6 +78,28 @@ jobs:
           echo "Instancia → $INSTANCE_ID"
 
       # ── DESTROY ───────────────────────────────────────────────────────────────
+      - name: Desactivar protección y terminar instancia EC2
+        if: github.event.inputs.action == 'destroy'
+        run: |
+          INSTANCE_ID=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --query 'Stacks[0].Outputs[?OutputKey==`InstanceId`].OutputValue' \
+            --output text 2>/dev/null || echo "")
+
+          if [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "None" ]; then
+            echo "Instancia: $INSTANCE_ID — desactivando protección..."
+            aws ec2 modify-instance-attribute \
+              --instance-id "$INSTANCE_ID" \
+              --no-disable-api-termination
+            echo "Terminando instancia..."
+            aws ec2 terminate-instances --instance-ids "$INSTANCE_ID" > /dev/null
+            echo "Esperando a que la instancia termine..."
+            aws ec2 wait instance-terminated --instance-ids "$INSTANCE_ID"
+            echo "Instancia terminada."
+          else
+            echo "No se encontró instancia activa en el stack."
+          fi
+
       - name: Eliminar stack
         if: github.event.inputs.action == 'destroy'
         run: |
