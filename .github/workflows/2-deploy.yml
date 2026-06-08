@@ -100,7 +100,9 @@ jobs:
             sleep 30
           done
 
-      # Instala Docker + Buildx + Compose si no están presentes (solo ocurre la primera vez)
+      # Instala Docker + Buildx + Compose si no están presentes (solo ocurre la primera vez).
+      # También garantiza 2 GB de swap en la instancia existente (UserData solo corre en el
+      # primer boot y no se re-ejecuta cuando CloudFormation actualiza la pila con Retain).
       - name: Setup Docker en EC2
         id: setup
         env:
@@ -111,6 +113,10 @@ jobs:
             --document-name "AWS-RunShellScript" \
             --parameters "commands=[
               \"set -euo pipefail\",
+              \"SWAP_MB=\$(free -m | awk '/Swap/{print \$2}')\",
+              \"echo \\\"Swap actual: \${SWAP_MB} MB\\\"\",
+              \"if [ \\\"\${SWAP_MB}\\\" -lt 2000 ]; then swapoff /swapfile 2>/dev/null || true && dd if=/dev/zero of=/swapfile bs=128M count=16 status=none && chmod 600 /swapfile && mkswap /swapfile -f && swapon /swapfile && echo '/swapfile swap swap defaults 0 0' >> /etc/fstab 2>/dev/null || true && echo \\\"Swap ampliado a 2 GB\\\"; else echo \\\"Swap ya es suficiente\\\"; fi\",
+              \"free -m\",
               \"if ! command -v docker &>/dev/null; then dnf install -y docker git && systemctl enable --now docker; fi\",
               \"PLUGINS=/usr/local/lib/docker/cli-plugins && mkdir -p \$PLUGINS\",
               \"if ! docker compose version &>/dev/null; then BUILDX_VER=\$(curl -fsSL https://api.github.com/repos/docker/buildx/releases/latest | python3 -c 'import sys,json; print(json.load(sys.stdin)[\\\"tag_name\\\"])') && curl -fsSL \\\"https://github.com/docker/buildx/releases/download/\${BUILDX_VER}/buildx-\${BUILDX_VER}.linux-amd64\\\" -o \$PLUGINS/docker-buildx && chmod +x \$PLUGINS/docker-buildx && curl -fsSL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 -o \$PLUGINS/docker-compose && chmod +x \$PLUGINS/docker-compose; fi\",

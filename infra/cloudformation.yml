@@ -82,7 +82,7 @@ Resources:
           #!/bin/bash
           # Solo configura swap: rápido, sin reiniciar servicios → SSM no se desconecta.
           # Docker se instala via SSM en el primer deploy.
-          dd if=/dev/zero of=/swapfile bs=128M count=8
+          dd if=/dev/zero of=/swapfile bs=128M count=16
           chmod 600 /swapfile
           mkswap /swapfile
           swapon /swapfile
