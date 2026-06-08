@@ -75,35 +75,13 @@ Resources:
       UserData:
         Fn::Base64: |
           #!/bin/bash
-          set -euo pipefail
-          exec > /var/log/userdata.log 2>&1
-
-          # Swap 1 GB
+          # Solo configura swap: rápido, sin reiniciar servicios → SSM no se desconecta.
+          # Docker se instala via SSM en el primer deploy.
           dd if=/dev/zero of=/swapfile bs=128M count=8
           chmod 600 /swapfile
           mkswap /swapfile
           swapon /swapfile
           echo '/swapfile swap swap defaults 0 0' >> /etc/fstab
-
-          # Docker
-          dnf install -y docker git
-          systemctl enable --now docker
-
-          # Docker Buildx (compose reciente lo requiere >= 0.17)
-          PLUGINS=/usr/local/lib/docker/cli-plugins
-          mkdir -p "$PLUGINS"
-          BUILDX_VER=$(curl -fsSL https://api.github.com/repos/docker/buildx/releases/latest \
-            | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'])")
-          curl -fsSL "https://github.com/docker/buildx/releases/download/${BUILDX_VER}/buildx-${BUILDX_VER}.linux-amd64" \
-            -o "$PLUGINS/docker-buildx"
-          chmod +x "$PLUGINS/docker-buildx"
-
-          # Docker Compose v2
-          curl -fsSL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64" \
-            -o "$PLUGINS/docker-compose"
-          chmod +x "$PLUGINS/docker-compose"
-
-          echo "UserData completado: $(docker --version) | $(docker compose version)"
       Tags:
         - Key: Name
           Value: !Sub '${ProjectName}-server'
