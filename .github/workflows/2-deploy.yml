@@ -1,0 +1,225 @@
+name: "2 · Deploy a EC2"
+
+# Se dispara automáticamente en cada push a main.
+# También se puede ejecutar manualmente desde Actions → Run workflow.
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "infra/**"
+      - "*.ipynb"
+      - ".github/workflows/1-infra.yml"
+  workflow_dispatch:
+
+env:
+  STACK_NAME: superstore-sales
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+
+jobs:
+  deploy:
+    name: Deploy · ${{ github.ref_name }}@${{ github.sha }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar credenciales AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # ── Obtener ID de la instancia desde el stack de CloudFormation ────────────
+      - name: Obtener Instance ID
+        id: ec2
+        run: |
+          INSTANCE_ID=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --query 'Stacks[0].Outputs[?OutputKey==`InstanceId`].OutputValue' \
+            --output text)
+
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
+            echo "::error::No se encontró el stack '$STACK_NAME'. Ejecuta primero el workflow '1 · Infraestructura'."
+            exit 1
+          fi
+
+          echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+          echo "Instancia: $INSTANCE_ID"
+
+      # ── Esperar a que el agente SSM esté online (importante en el primer deploy) ──
+      - name: Esperar SSM agent
+        env:
+          INSTANCE_ID: ${{ steps.ec2.outputs.instance_id }}
+        run: |
+          echo "Esperando que el agente SSM esté Online..."
+          for i in $(seq 1 20); do
+            STATUS=$(aws ssm describe-instance-information \
+              --filters "Key=InstanceIds,Values=$INSTANCE_ID" \
+              --query 'InstanceInformationList[0].PingStatus' \
+              --output text 2>/dev/null || echo "None")
+
+            echo "  [$i/20] SSM status: $STATUS"
+
+            if [ "$STATUS" = "Online" ]; then
+              echo "Agente SSM listo."
+              break
+            fi
+
+            if [ "$i" -eq 20 ]; then
+              echo "::error::El agente SSM no respondió después de 10 minutos."
+              exit 1
+            fi
+
+            sleep 30
+          done
+
+      # ── Helper: envía un script vía SSM y espera el resultado ─────────────────
+      # Reutilizado en los dos pasos siguientes.
+      # Convierte el archivo .sh a base64 para evitar problemas con caracteres especiales.
+
+      - name: Setup Docker en EC2 (idempotente)
+        id: setup
+        env:
+          INSTANCE_ID: ${{ steps.ec2.outputs.instance_id }}
+        run: |
+          # Codificar el script en base64 para pasarlo limpio a SSM
+          SCRIPT_B64=$(base64 -w 0 scripts/setup.sh)
+
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --parameters "{
+              \"commands\": [\"echo $SCRIPT_B64 | base64 -d | bash\"],
+              \"executionTimeout\": [\"600\"]
+            }" \
+            --comment "Setup Docker - commit ${{ github.sha }}" \
+            --query 'Command.CommandId' \
+            --output text)
+
+          echo "cmd_id=$CMD_ID" >> "$GITHUB_OUTPUT"
+          echo "Setup command ID: $CMD_ID"
+
+          # Esperar hasta 10 min (40 intentos × 15 s)
+          for i in $(seq 1 40); do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$CMD_ID" \
+              --instance-id "$INSTANCE_ID" \
+              --query 'Status' --output text 2>/dev/null || echo "InProgress")
+
+            echo "  [$i/40] $STATUS"
+
+            [ "$STATUS" = "Success" ] && { echo "Setup exitoso."; break; }
+
+            if echo "$STATUS" | grep -qE '^(Failed|TimedOut|Cancelled|DeliveryTimedOut)$'; then
+              echo "::error::Setup falló con estado: $STATUS"
+              aws ssm get-command-invocation \
+                --command-id "$CMD_ID" \
+                --instance-id "$INSTANCE_ID" \
+                --query 'StandardErrorContent' --output text
+              exit 1
+            fi
+
+            [ "$i" -eq 40 ] && { echo "::error::Timeout esperando setup."; exit 1; }
+            sleep 15
+          done
+
+      - name: Logs de setup
+        if: always() && steps.setup.outputs.cmd_id != ''
+        env:
+          INSTANCE_ID: ${{ steps.ec2.outputs.instance_id }}
+        run: |
+          aws ssm get-command-invocation \
+            --command-id "${{ steps.setup.outputs.cmd_id }}" \
+            --instance-id "$INSTANCE_ID" \
+            --query 'StandardOutputContent' \
+            --output text || true
+
+      # ── Desplegar la aplicación ───────────────────────────────────────────────
+      - name: Desplegar aplicación
+        id: deploy
+        env:
+          INSTANCE_ID: ${{ steps.ec2.outputs.instance_id }}
+        run: |
+          REPO_URL="${{ github.server_url }}/${{ github.repository }}.git"
+          # Para repos privados añade: GH_TOKEN=${{ secrets.GH_TOKEN }} y descomenta
+          # la línea en deploy.sh que usa x-access-token.
+
+          SCRIPT_B64=$(base64 -w 0 scripts/deploy.sh)
+
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --parameters "{
+              \"commands\": [
+                \"export REPO_URL='$REPO_URL'\",
+                \"echo $SCRIPT_B64 | base64 -d | bash\"
+              ],
+              \"executionTimeout\": [\"900\"]
+            }" \
+            --comment "Deploy ${{ github.ref_name }}@${{ github.sha }}" \
+            --query 'Command.CommandId' \
+            --output text)
+
+          echo "cmd_id=$CMD_ID" >> "$GITHUB_OUTPUT"
+          echo "Deploy command ID: $CMD_ID"
+
+          # Esperar hasta 15 min (60 intentos × 15 s)
+          # El primer deploy tarda más porque entrena los modelos (~2-4 min)
+          for i in $(seq 1 60); do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$CMD_ID" \
+              --instance-id "$INSTANCE_ID" \
+              --query 'Status' --output text 2>/dev/null || echo "InProgress")
+
+            echo "  [$i/60] $STATUS"
+
+            [ "$STATUS" = "Success" ] && { echo "Deploy exitoso."; break; }
+
+            if echo "$STATUS" | grep -qE '^(Failed|TimedOut|Cancelled|DeliveryTimedOut)$'; then
+              echo "::error::Deploy falló con estado: $STATUS"
+              aws ssm get-command-invocation \
+                --command-id "$CMD_ID" \
+                --instance-id "$INSTANCE_ID" \
+                --query 'StandardErrorContent' --output text
+              exit 1
+            fi
+
+            [ "$i" -eq 60 ] && { echo "::error::Timeout esperando deploy."; exit 1; }
+            sleep 15
+          done
+
+      - name: Logs de deploy
+        if: always() && steps.deploy.outputs.cmd_id != ''
+        env:
+          INSTANCE_ID: ${{ steps.ec2.outputs.instance_id }}
+        run: |
+          aws ssm get-command-invocation \
+            --command-id "${{ steps.deploy.outputs.cmd_id }}" \
+            --instance-id "$INSTANCE_ID" \
+            --query 'StandardOutputContent' \
+            --output text || true
+
+      # ── Resumen final ─────────────────────────────────────────────────────────
+      - name: Resumen de URLs
+        if: success()
+        run: |
+          PUBLIC_IP=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --query 'Stacks[0].Outputs[?OutputKey==`PublicIP`].OutputValue' \
+            --output text)
+
+          echo "### ✅ Deploy completado" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Commit:** \`${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| App | URL |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-----|-----|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Streamlit | http://${PUBLIC_IP}:8501 |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| MLflow    | http://${PUBLIC_IP}:5000 |" >> "$GITHUB_STEP_SUMMARY"
+
+          echo ""
+          echo "Streamlit → http://${PUBLIC_IP}:8501"
+          echo "MLflow    → http://${PUBLIC_IP}:5000"

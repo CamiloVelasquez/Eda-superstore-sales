@@ -1,0 +1,90 @@
+name: "1 · Infraestructura (CloudFormation)"
+
+# Disparo manual desde Actions → Run workflow
+# Úsalo UNA VEZ para crear la infra; luego el workflow 2 se encarga del despliegue.
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Acción a ejecutar"
+        required: true
+        default: deploy
+        type: choice
+        options:
+          - deploy    # crea o actualiza el stack
+          - destroy   # elimina todo (¡irreversible!)
+
+env:
+  STACK_NAME: superstore-sales
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+
+jobs:
+  infrastructure:
+    name: CloudFormation · ${{ github.event.inputs.action }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar credenciales AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # ── DEPLOY ────────────────────────────────────────────────────────────────
+      - name: Crear / actualizar stack
+        if: github.event.inputs.action == 'deploy'
+        run: |
+          aws cloudformation deploy \
+            --template-file infra/cloudformation.yml \
+            --stack-name "$STACK_NAME" \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset
+
+      - name: Mostrar outputs del stack
+        if: github.event.inputs.action == 'deploy'
+        run: |
+          STREAMLIT=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --query 'Stacks[0].Outputs[?OutputKey==`StreamlitURL`].OutputValue' \
+            --output text)
+
+          MLFLOW=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --query 'Stacks[0].Outputs[?OutputKey==`MLflowURL`].OutputValue' \
+            --output text)
+
+          INSTANCE_ID=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --query 'Stacks[0].Outputs[?OutputKey==`InstanceId`].OutputValue' \
+            --output text)
+
+          echo "### ✅ Infraestructura lista" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Recurso | Valor |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Instancia | \`$INSTANCE_ID\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Streamlit | $STREAMLIT |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| MLflow | $MLFLOW |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "> Ejecuta el workflow **2 · Deploy** para desplegar la aplicación." >> "$GITHUB_STEP_SUMMARY"
+
+          echo ""
+          echo "Streamlit → $STREAMLIT"
+          echo "MLflow    → $MLFLOW"
+          echo "Instancia → $INSTANCE_ID"
+
+      # ── DESTROY ───────────────────────────────────────────────────────────────
+      - name: Eliminar stack
+        if: github.event.inputs.action == 'destroy'
+        run: |
+          echo "Eliminando stack $STACK_NAME..."
+          aws cloudformation delete-stack --stack-name "$STACK_NAME"
+          aws cloudformation wait stack-delete-complete --stack-name "$STACK_NAME"
+          echo "Stack eliminado."
+
+          echo "### 🗑️ Stack eliminado" >> "$GITHUB_STEP_SUMMARY"
+          echo "Todos los recursos de \`$STACK_NAME\` han sido eliminados." >> "$GITHUB_STEP_SUMMARY"

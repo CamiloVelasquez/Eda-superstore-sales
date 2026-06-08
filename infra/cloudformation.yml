@@ -1,0 +1,111 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Superstore Sales MLOps - EC2 Free Tier (t3.micro + SSM + Elastic IP)
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: superstore-sales
+
+Resources:
+
+  # ── IAM: permite al agente SSM operar en la instancia (sin necesidad de SSH keys) ──
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-ec2-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub '${ProjectName}-profile'
+      Roles:
+        - !Ref EC2Role
+
+  # ── Red: sólo expone los puertos de la app (no SSH) ──
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${ProjectName}-sg'
+      GroupDescription: Streamlit (8501) y MLflow (5000)
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8501
+          ToPort: 8501
+          CidrIp: 0.0.0.0/0
+          Description: Streamlit app
+        - IpProtocol: tcp
+          FromPort: 5000
+          ToPort: 5000
+          CidrIp: 0.0.0.0/0
+          Description: MLflow UI
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-sg'
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ── Cómputo: t3.micro free tier, Amazon Linux 2023, 30 GB EBS ──
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.micro
+      # Última AMI de Amazon Linux 2023 via SSM Parameter Store (se actualiza automáticamente)
+      ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      SecurityGroups:
+        - !Ref SecurityGroup
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 30
+            VolumeType: gp2
+            DeleteOnTermination: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-server'
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ── IP fija: la app siempre tiene la misma URL ──
+  ElasticIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      InstanceId: !Ref EC2Instance
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-eip'
+        - Key: Project
+          Value: !Ref ProjectName
+
+Outputs:
+  InstanceId:
+    Value: !Ref EC2Instance
+    Description: ID de la instancia EC2
+    Export:
+      Name: !Sub '${ProjectName}-instance-id'
+
+  PublicIP:
+    Value: !Ref ElasticIP
+    Description: IP pública fija (Elastic IP)
+    Export:
+      Name: !Sub '${ProjectName}-public-ip'
+
+  StreamlitURL:
+    Value: !Sub 'http://${ElasticIP}:8501'
+    Description: URL de la app Streamlit
+
+  MLflowURL:
+    Value: !Sub 'http://${ElasticIP}:5000'
+    Description: URL del servidor MLflow
