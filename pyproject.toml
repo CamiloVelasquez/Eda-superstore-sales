@@ -13,5 +13,6 @@ dependencies = [
     "folium>=0.20.0",
     "pgeocode>=0.5.0",
     "mlflow",
-    "scikit-learn"
+    "scikit-learn",
+    "streamlit>=1.58.0",
 ]

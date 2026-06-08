@@ -1,0 +1,26 @@
+# Entorno y cachés
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Control de versiones y meta
+.git/
+.gitignore
+.claude/
+CLAUDE.md
+
+# Artefactos de MLflow (se generan dentro del contenedor / volumen)
+mlruns/
+mlartifacts/
+mlflow.db
+mlruns*.db
+
+# Material de EDA no necesario para entrenar/servir (imagen más liviana)
+superstore_eda.ipynb
+us-states.json
+
+# Salida local
+*.log
+predicciones_profit.csv

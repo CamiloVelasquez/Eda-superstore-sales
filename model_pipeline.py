@@ -20,6 +20,12 @@ from urllib.parse import urlparse
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 warnings.filterwarnings("ignore")
 
+# Shared MLflow constants (reused by the Streamlit app)
+EXPERIMENT_NAME = "Superstore Profit Prediction"
+REGISTERED_MODEL_NAME = "SuperstoreProfitBestModel"
+DEFAULT_REMOTE_TRACKING_URI = "http://127.0.0.1:5000"
+LOCAL_TRACKING_URI = "sqlite:///mlflow.db"
+
 def load_data(file_path):
     """Loads the dataset from a CSV file."""
     try:
@@ -147,7 +153,30 @@ def train_and_evaluate(model_name, model, param_distributions, X_train, y_train,
             "r2": r2,
         }
 
+def _registered_model_exists():
+    """Returns True if a version of the best-model registry entry already exists."""
+    try:
+        from mlflow.tracking import MlflowClient
+        return bool(MlflowClient().search_model_versions(f"name='{REGISTERED_MODEL_NAME}'"))
+    except Exception:
+        return False
+
+
 def main():
+    # MLflow experiment setup (resolve backend before any check)
+    setup_tracking_uri()
+
+    # Idempotencia para Docker: si ya hay un modelo registrado y se pide omitir,
+    # no se vuelve a entrenar (util para 'docker compose up' repetidos).
+    if os.environ.get("SKIP_IF_REGISTERED") == "1" and _registered_model_exists():
+        logging.info(
+            f"A registered '{REGISTERED_MODEL_NAME}' model already exists; "
+            "skipping training (SKIP_IF_REGISTERED=1)."
+        )
+        return
+
+    mlflow.set_experiment(EXPERIMENT_NAME)
+
     file_path = 'sample_-_superstore.csv'
     df = load_data(file_path)
     df = preprocess_data(df)
@@ -159,27 +188,6 @@ def main():
     # Split data
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     logging.info("Data split into training and testing sets.")
-
-    # MLflow experiment setup.
-    # Usa un servidor de tracking remoto si esta disponible; si no, cae a un
-    # almacenamiento local (./mlruns) para que el script sea reproducible sin
-    # necesidad de levantar 'mlflow server'.
-    tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", "http://127.0.0.1:5000")
-    try:
-        with socket.create_connection(_split_host_port(tracking_uri), timeout=2):
-            pass
-        mlflow.set_tracking_uri(tracking_uri)
-        logging.info(f"Using MLflow tracking server at {tracking_uri}")
-    except (OSError, ValueError):
-        # SQLite backend (no el file store './mlruns', que MLflow 3.x rechaza).
-        # Habilita ademas el Model Registry en modo local.
-        local_uri = "sqlite:///mlflow.db"
-        mlflow.set_tracking_uri(local_uri)
-        logging.warning(
-            f"MLflow server at {tracking_uri} unreachable; "
-            f"falling back to local store at {local_uri}"
-        )
-    mlflow.set_experiment("Superstore Profit Prediction")
 
     results = []
 
@@ -223,6 +231,30 @@ def _split_host_port(uri):
     return parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80)
 
 
+def setup_tracking_uri():
+    """Resolves and sets the MLflow tracking URI, returning the active URI.
+
+    Uses a remote tracking server (MLFLOW_TRACKING_URI env var, or the default
+    local server) when reachable; otherwise falls back to a local SQLite store.
+    Shared by the training pipeline and the Streamlit app so both point to the
+    same backend. SQLite (not the './mlruns' file store, which MLflow 3.x
+    rejects) is used locally and also enables the Model Registry.
+    """
+    tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", DEFAULT_REMOTE_TRACKING_URI)
+    try:
+        with socket.create_connection(_split_host_port(tracking_uri), timeout=2):
+            pass
+        mlflow.set_tracking_uri(tracking_uri)
+        logging.info(f"Using MLflow tracking server at {tracking_uri}")
+    except (OSError, ValueError):
+        mlflow.set_tracking_uri(LOCAL_TRACKING_URI)
+        logging.warning(
+            f"MLflow server at {tracking_uri} unreachable; "
+            f"falling back to local store at {LOCAL_TRACKING_URI}"
+        )
+    return mlflow.get_tracking_uri()
+
+
 def select_best_model(results):
     """Compares all experiments and selects the best model with a justification.
 
@@ -259,9 +291,9 @@ def select_best_model(results):
     # Register the winning model in the MLflow Model Registry, tagged with the rationale.
     model_uri = f"runs:/{best['run_id']}/model"
     try:
-        registered = mlflow.register_model(model_uri, "SuperstoreProfitBestModel")
+        registered = mlflow.register_model(model_uri, REGISTERED_MODEL_NAME)
         logging.info(
-            f"Best model registered as 'SuperstoreProfitBestModel' "
+            f"Best model registered as '{REGISTERED_MODEL_NAME}' "
             f"version {registered.version}."
         )
     except Exception as exc:  # registry may be unavailable on a file-based store
