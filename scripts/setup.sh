@@ -20,22 +20,27 @@ if command -v docker &>/dev/null; then
   echo "Docker ya instalado: $(docker --version)"
   systemctl start docker || true
 else
-  echo "Instalando Docker..."
+  echo "Instalando Docker y git..."
   dnf install -y docker git
   systemctl start docker
   systemctl enable docker
-
-  echo "Instalando Docker Compose v2..."
-  mkdir -p /usr/local/lib/docker/cli-plugins
-  curl -SL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64" \
-    -o /usr/local/lib/docker/cli-plugins/docker-compose
-  chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
-
   echo "Docker instalado: $(docker --version)"
-  echo "Compose: $(docker compose version)"
 fi
 
-echo "=== [3/3] Verificación ==="
+echo "=== [3/3] Docker Compose v2 ==="
+COMPOSE_PLUGIN="/usr/local/lib/docker/cli-plugins/docker-compose"
+if docker compose version &>/dev/null; then
+  echo "Compose ya instalado: $(docker compose version)"
+else
+  echo "Instalando Docker Compose v2..."
+  mkdir -p /usr/local/lib/docker/cli-plugins
+  curl -fsSL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64" \
+    -o "$COMPOSE_PLUGIN"
+  chmod +x "$COMPOSE_PLUGIN"
+  echo "Compose instalado: $(docker compose version)"
+fi
+
+echo "=== Verificación final ==="
 docker info --format 'Docker: {{.ServerVersion}}  Containers: {{.Containers}}'
 docker compose version
 echo "Setup completado."
