@@ -27,20 +27,29 @@ else
   echo "Docker instalado: $(docker --version)"
 fi
 
-echo "=== [3/3] Docker Compose v2 ==="
-COMPOSE_PLUGIN="/usr/local/lib/docker/cli-plugins/docker-compose"
-if docker compose version &>/dev/null; then
-  echo "Compose ya instalado: $(docker compose version)"
-else
-  echo "Instalando Docker Compose v2..."
-  mkdir -p /usr/local/lib/docker/cli-plugins
-  curl -fsSL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64" \
-    -o "$COMPOSE_PLUGIN"
-  chmod +x "$COMPOSE_PLUGIN"
-  echo "Compose instalado: $(docker compose version)"
-fi
+PLUGINS_DIR="/usr/local/lib/docker/cli-plugins"
+mkdir -p "$PLUGINS_DIR"
+
+echo "=== [3/4] Docker Buildx ==="
+# Compose reciente requiere buildx >= 0.17; AL2023 trae una versión antigua
+BUILDX_VER=$(curl -fsSL https://api.github.com/repos/docker/buildx/releases/latest \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'])")
+echo "Instalando Docker Buildx $BUILDX_VER..."
+curl -fsSL "https://github.com/docker/buildx/releases/download/${BUILDX_VER}/buildx-${BUILDX_VER}.linux-amd64" \
+  -o "$PLUGINS_DIR/docker-buildx"
+chmod +x "$PLUGINS_DIR/docker-buildx"
+echo "Buildx instalado: $(docker buildx version)"
+
+echo "=== [4/4] Docker Compose v2 ==="
+COMPOSE_PLUGIN="$PLUGINS_DIR/docker-compose"
+echo "Instalando Docker Compose v2 (latest)..."
+curl -fsSL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64" \
+  -o "$COMPOSE_PLUGIN"
+chmod +x "$COMPOSE_PLUGIN"
+echo "Compose instalado: $(docker compose version)"
 
 echo "=== Verificación final ==="
 docker info --format 'Docker: {{.ServerVersion}}  Containers: {{.Containers}}'
+docker buildx version
 docker compose version
 echo "Setup completado."
