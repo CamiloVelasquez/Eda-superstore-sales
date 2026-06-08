@@ -21,7 +21,7 @@ if command -v docker &>/dev/null; then
   systemctl start docker || true
 else
   echo "Instalando Docker..."
-  dnf install -y docker docker-compose-plugin git
+  dnf install -y docker git
   systemctl start docker
   systemctl enable docker
   echo "Docker instalado: $(docker --version)"
