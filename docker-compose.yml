@@ -22,10 +22,10 @@ services:
       - mlflow-data:/mlflow
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:5000/health').status==200 else 1)"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-      start_period: 10s
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 60s
 
   trainer:
     build: .
