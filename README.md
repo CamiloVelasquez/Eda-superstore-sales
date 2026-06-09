@@ -13,7 +13,7 @@ rentabilidad y exponer un modelo predictivo en producción.
 El proyecto tiene dos fases:
 
 1. **EDA** — todo el análisis vive en el notebook `notebooks/superstore_eda.ipynb`.
-2. **Modelado y despliegue** — un pipeline que entrena y compara 3 modelos de regresión,
+2. **Modelado y despliegue** — un pipeline que entrena y compara 4 modelos de regresión,
    los registra en **MLflow**, selecciona el mejor y lo expone en una app de **Streamlit**.
    Todo se levanta con Docker y se despliega automáticamente en AWS via GitHub Actions.
 
@@ -22,7 +22,7 @@ El proyecto tiene dos fases:
 ```
 ├── src/
 │   ├── app.py           # App Streamlit: predicción individual/lotes, comparación, diagnóstico
-│   └── pipeline.py      # Entrena 3 modelos, registra en MLflow y selecciona el mejor
+│   └── pipeline.py      # Entrena 4 modelos, registra en MLflow y selecciona el mejor
 ├── data/
 │   └── raw/
 │       ├── sample_-_superstore.csv   # Dataset de origen (encoding latin1)
@@ -57,7 +57,7 @@ docker compose up --build
 | `streamlit` | http://localhost:8501 | App de predicción |
 
 > La primera vez no habrá modelo entrenado. La app muestra un botón **"Entrenar modelo ahora"**
-> — haz clic y el pipeline entrena los 3 modelos (~3-5 min) y registra el mejor en MLflow.
+> — haz clic y el pipeline entrena los 4 modelos (~5-10 min) y registra el mejor en MLflow.
 > Los datos quedan en un volumen Docker (`mlflow-data`) y persisten entre reinicios.
 
 Comandos útiles:
@@ -91,12 +91,70 @@ uv run mlflow server --backend-store-uri sqlite:///mlflow.db   # http://localhos
 
 ## ¿Qué hace el pipeline de modelado?
 
-- Entrena y compara **3 modelos de regresión** para predecir `Profit`:
-  Regresión Lineal, Random Forest y Gradient Boosting.
+- Entrena y compara **4 modelos de regresión** para predecir `Profit`:
+  Regresión Lineal (baseline), Huber Regressor, Random Forest y Gradient Boosting.
 - Optimiza hiperparámetros con **`RandomizedSearchCV`** (`n_iter=8`, `cv=2`).
 - Registra cada experimento en **MLflow**: hiperparámetros, métricas (RMSE, MAE, R²) y el
   modelo como artefacto.
 - **Selecciona el mejor modelo** por menor **RMSE** y lo publica en el *Model Registry*.
+
+## Supuestos estadísticos y decisiones de diseño
+
+Se verificaron los supuestos de cada modelo sobre los datos reales antes de fijar la arquitectura
+del pipeline.
+
+### Hallazgos sobre el target `Profit`
+
+| Estadístico | Valor |
+|---|---|
+| Skewness | 7.6 (muy sesgado a la derecha) |
+| Kurtosis | 401.7 (colas extremadamente pesadas) |
+| Outliers (IQR) | 18.8 % — rango [−6 600, +8 400] |
+| Shapiro-Wilk p | ≈ 0 → distribución no normal |
+
+### Supuestos por modelo
+
+| Supuesto | Reg. Lineal (baseline) | Huber Regressor | Random Forest | Gradient Boosting |
+|---|---|---|---|---|
+| Normalidad de residuos | ❌ Skewness=15.5 | ⚠️ Mejorado con pérdida Huber | no aplica | no aplica |
+| Linealidad | ⚠️ Solo `Sales` (r=0.48) y `Discount` (r=−0.22) | ⚠️ Igual | no aplica | no aplica |
+| Homocedasticidad | ❌ Heteroced. (p=0.003) | ⚠️ Parcial | no aplica | no aplica |
+| Multicolinealidad | ❌ VIF > 4M en fechas → corregido | ✅ Corregido | ⚠️ Sesga importancias | ⚠️ Sesga importancias |
+| Outliers | ❌ Severo (18.8% IQR) | ✅ Pérdida Huber | ✅ Aislados por splits | ✅ Pérdida Huber en GBR |
+| Independencia (Durbin-Watson) | ✅ DW = 1.99 | ✅ | ✅ | ✅ |
+
+### Ajustes implementados
+
+**1. Eliminación de variables de fecha redundantes**
+`Ship_Year`, `Ship_Month`, `Ship_Day` y `Order_Day` presentaban VIF > 4 000 000: eran
+derivables de las variables de fecha del pedido más `Order_Processing_Time`. Se eliminaron
+del preprocesamiento para eliminar la multicolinealidad perfecta.
+
+**2. `RobustScaler` en lugar de `StandardScaler`**
+Escala usando mediana e IQR, ignorando los valores extremos del target. Beneficia al
+Huber Regressor y evita que los outliers distorsionen la normalización.
+
+**3. `HuberRegressor` como modelo lineal robusto adicional**
+Se agrega junto a la Regresión Lineal ordinaria (que se conserva como baseline).
+Minimiza pérdida L2 para errores pequeños y L1 para los grandes, recortando el impacto
+de los outliers que producían residuos con skewness = 15.5 en la regresión ordinaria.
+
+**4. `GradientBoostingRegressor(loss='huber')`**
+Evita que los árboles sucesivos se concentren en los outliers extremos que el árbol
+anterior no pudo ajustar bien.
+
+### Resultados antes y después de los ajustes
+
+| Modelo | RMSE antes | RMSE después | R² antes | R² después |
+|---|---|---|---|---|
+| Gradient Boosting | 135.95 | **114.08** | 0.794 | **0.855** |
+| Random Forest | 147.87 | **145.87** | 0.756 | **0.763** |
+| Huber Regressor | — | **195.73** | — | **0.573** |
+| Regresión Lineal (baseline) | 215.15 | ~215 | 0.484 | ~0.484 |
+
+La Regresión Lineal se conserva como baseline para mostrar el impacto de las violaciones
+de supuestos. El Gradient Boosting con pérdida Huber obtiene la mayor mejora (−16 % RMSE,
++6 pp R²) y sigue siendo el modelo seleccionado.
 
 ## App de Streamlit
 
@@ -143,8 +201,14 @@ Al abrir `notebooks/superstore_eda.ipynb`, selecciona el kernel **"Python (Eda-s
 4. **Distribución del target `Profit`** — histograma, boxplot, sesgo y curtosis.
 5. **Análisis univariado** — distribuciones numéricas y categóricas.
 6. **Análisis bivariado** — correlaciones y relación `Discount` ↔ `Profit`.
-7. **Análisis geográfico** — mapas coropléticos y de burbujas por ciudad.
-8. **Hallazgos y conclusiones** — features candidatas para modelado.
+7. **Análisis geográfico** — mapas coropléticos y de burbujas por ciudad (Folium).
+8. **Análisis temporal** — tendencia mensual, estacionalidad y días de envío.
+9. **Umbral de descuento por sub-categoría** — heatmap de Profit por nivel de descuento.
+10. **Análisis de clientes** — top clientes, frecuencia de compra y rentabilidad por segmento.
+11. **Productos más y menos rentables** — margen neto por sub-categoría.
+12. **Correlación avanzada** — pairplot por categoría.
+13. **Verificación de supuestos** — Shapiro-Wilk, linealidad (Pearson r), homocedasticidad (Spearman), outliers; tabla resumen por modelo con decisiones del pipeline.
+14. **Conclusiones** — hallazgos clave, variables seleccionadas y recomendaciones de negocio.
 
 ## Dependencias principales
 
