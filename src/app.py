@@ -6,8 +6,6 @@ permite:
   - 🧮 Predecir el Profit de una transaccion (formulario interactivo).
   - 📁 Predecir por lotes subiendo un CSV (con descarga de resultados).
   - 📊 Comparar los experimentos y ver por que se eligio este modelo.
-  - 🔍 Diagnosticar el modelo (predicho vs real, residuos).
-  - ⭐ Ver la importancia de las variables.
 
 Requisito previo: haber entrenado los modelos al menos una vez con
     uv run python src/pipeline.py
@@ -46,11 +44,11 @@ from pipeline import (
 DATA_PATH = "data/raw/sample_-_superstore.csv"
 TARGET = "Profit"
 
-# Columnas que el modelo espera pero que se derivan de las fechas:
-# el formulario las reemplaza por dos date_input amigables.
+# Columnas derivadas de fechas que el pipeline genera internamente.
+# Order_Day y Ship_Year/Month/Day se eliminaron (VIF > 4M, r≈0 con Profit).
+# El formulario las reemplaza con dos date_input amigables.
 DATE_DERIVED = frozenset({
-    "Order_Year", "Order_Month", "Order_Day",
-    "Ship_Year", "Ship_Month", "Ship_Day",
+    "Order_Year", "Order_Month",
     "Order_Processing_Time",
 })
 
@@ -59,13 +57,9 @@ LABELS_ES = {
     "Sales":    "Ventas ($)",
     "Quantity": "Cantidad (unidades)",
     "Discount": "Descuento (0.0 – 1.0)",
-    # Derivadas de fechas
+    # Derivadas de fechas (las que permanecen en el modelo)
     "Order_Year":            "Fecha de pedido → año",
     "Order_Month":           "Fecha de pedido → mes",
-    "Order_Day":             "Fecha de pedido → día",
-    "Ship_Year":             "Fecha de envío → año",
-    "Ship_Month":            "Fecha de envío → mes",
-    "Ship_Day":              "Fecha de envío → día",
     "Order_Processing_Time": "Días hasta el envío",
     # Categóricas
     "Ship Mode":       "Modo de envío",
@@ -230,7 +224,7 @@ if model is None:
         "El proceso toma ~3-5 minutos la primera vez."
     )
     if st.button("🚀 Entrenar modelo ahora", type="primary"):
-        with st.spinner("Entrenando 3 modelos (Linear Regression, Random Forest, Gradient Boosting)..."):
+        with st.spinner("Entrenando 4 modelos (Linear Regression, Huber, Random Forest, Gradient Boosting)..."):
             ok, stderr = _run_training()
         if ok:
             st.success("¡Entrenamiento completado! Recargando...")
@@ -243,8 +237,24 @@ if model is None:
     st.stop()
 
 X_train, X_test, y_test = get_feature_frame()
-y_pred = model.predict(X_test)
-residuals = y_test.values - y_pred
+
+# Detectar si el modelo guardado fue entrenado con un conjunto de features distinto
+# (ocurre cuando se despliega código nuevo sin re-entrenar).
+try:
+    y_pred = model.predict(X_test)
+except ValueError as _feat_err:
+    st.cache_data.clear()
+    st.cache_resource.clear()
+    st.error(
+        "**El modelo guardado es incompatible con el conjunto de variables actual.** "
+        "Esto ocurre cuando se actualiza el pipeline sin re-entrenar. "
+        f"Detalle: `{_feat_err}`"
+    )
+    st.warning(
+        "Haz clic en **Re-entrenar modelos** en la barra lateral para generar un modelo "
+        "con las variables actuales y resolver el problema."
+    )
+    st.stop()
 
 best_name = best_run.data.params.get("model_name", "Desconocido")
 best_metrics = best_run.data.metrics
@@ -257,13 +267,11 @@ st.success(
     f"R² {best_metrics.get('r2_score', float('nan')):.3f}"
 )
 
-tab_pred, tab_batch, tab_cmp, tab_diag, tab_imp = st.tabs(
+tab_pred, tab_batch, tab_cmp = st.tabs(
     [
         "🧮 Predicción individual",
         "📁 Predicción por lotes",
         "📊 Comparación de modelos",
-        "🔍 Diagnóstico",
-        "⭐ Importancia de variables",
     ]
 )
 
@@ -386,10 +394,6 @@ with tab_pred:
             inputs.update(_geo_inputs)
             inputs["Order_Year"]            = order_dt.year
             inputs["Order_Month"]           = order_dt.month
-            inputs["Order_Day"]             = order_dt.day
-            inputs["Ship_Year"]             = ship_dt.year
-            inputs["Ship_Month"]            = ship_dt.month
-            inputs["Ship_Day"]              = ship_dt.day
             inputs["Order_Processing_Time"] = (ship_dt - order_dt).days
 
             row  = pd.DataFrame([inputs])[X_train.columns]
@@ -490,90 +494,56 @@ with tab_cmp:
         )
         st.dataframe(table, width="stretch")
 
-        if "RMSE" in table.columns:
-            colA, colB = st.columns(2)
-            with colA:
-                st.markdown("**RMSE / MAE por modelo** (menor es mejor)")
-                err = table.set_index("Modelo")[[c for c in ["RMSE", "MAE"] if c in table.columns]]
-                st.bar_chart(err)
-            with colB:
-                if "R2_SCORE" in table.columns:
-                    st.markdown("**R² por modelo** (mayor es mejor)")
-                    st.bar_chart(table.set_index("Modelo")[["R2_SCORE"]])
+        metric_defs = [
+            ("RMSE",     "RMSE (menor es mejor)",  False),
+            ("MAE",      "MAE (menor es mejor)",   False),
+            ("R2_SCORE", "R² (mayor es mejor)",    True),
+        ]
+        available = [(col, label, higher) for col, label, higher in metric_defs if col in table.columns]
+        if available:
+            n_models = len(table)
+            # Ancho dinámico: más espacio por modelo para evitar solapamiento de etiquetas
+            fig_w = max(4, n_models * 1.1)
+            chart_cols = st.columns(len(available))
+            for (col, label, higher), ch_col in zip(available, chart_cols):
+                with ch_col:
+                    st.markdown(f"**{label}**")
+                    fig_m, ax_m = plt.subplots(figsize=(fig_w, 3.5))
+                    models = table["Modelo"].tolist()
+                    values = table[col].tolist()
+                    x = list(range(len(models)))
+                    ax_m.plot(x, values, marker="o", linewidth=2, markersize=7, color="#1f77b4")
+                    for xi, yi in zip(x, values):
+                        ax_m.annotate(
+                            f"{yi:.3f}", (xi, yi),
+                            textcoords="offset points", xytext=(0, 8),
+                            ha="center", fontsize=8,
+                        )
+                    short_labels = [
+                        m.replace("Gradient Boosting Regressor", "Gradient\nBoosting")
+                         .replace("Random Forest Regressor", "Random\nForest")
+                         .replace("Huber Regressor", "Huber\nRegressor")
+                         .replace("Linear Regression", "Linear\nRegression")
+                        for m in models
+                    ]
+                    ax_m.set_xticks(x)
+                    ax_m.set_xticklabels(short_labels, fontsize=8)
+                    ax_m.set_ylabel(col)
+                    ax_m.margins(y=0.25)
+                    fig_m.tight_layout()
+                    st.pyplot(fig_m)
+                    plt.close(fig_m)
 
         with st.expander("Hiperparámetros del modelo ganador"):
             params = {k: v for k, v in best_run.data.params.items() if k != "model_name"}
             st.table(pd.DataFrame(sorted(params.items()), columns=["Hiperparámetro", "Valor"]))
 
         st.caption(
-            "Criterio de selección: menor RMSE en test, porque penaliza con más "
-            "fuerza los errores grandes — relevante al predecir *Profit*, donde un "
-            "error grande en una transacción importa más que muchos errores pequeños."
+            "Se comparan 4 modelos: Regresión Lineal (baseline), Huber Regressor (robusto a outliers), "
+            "Random Forest y Gradient Boosting (con pérdida Huber). "
+            "Criterio de selección: menor **RMSE**, porque penaliza con más fuerza los errores grandes "
+            "— relevante al predecir *Profit*, donde un error grande importa más que muchos errores pequeños. "
+            "Los modelos basados en árboles no requieren normalidad ni linealidad, cumpliendo mejor los "
+            "supuestos estadísticos del dataset (skewness=7.6, 18.8% outliers por IQR)."
         )
 
-# --------------------------------------------------------------------------- #
-# 4) Diagnostico: predicho vs real y residuos
-# --------------------------------------------------------------------------- #
-with tab_diag:
-    st.markdown("### Diagnóstico sobre el conjunto de prueba")
-    colL, colR = st.columns(2)
-
-    with colL:
-        st.markdown("**Predicho vs. Real**")
-        fig, ax = plt.subplots(figsize=(5, 5))
-        ax.scatter(y_test, y_pred, s=8, alpha=0.3, edgecolors="none")
-        lims = [min(y_test.min(), y_pred.min()), max(y_test.max(), y_pred.max())]
-        ax.plot(lims, lims, "r--", lw=1, label="Predicción perfecta")
-        ax.set_xlabel("Profit real")
-        ax.set_ylabel("Profit predicho")
-        ax.legend()
-        st.pyplot(fig)
-
-    with colR:
-        st.markdown("**Residuos vs. Predicho**")
-        fig2, ax2 = plt.subplots(figsize=(5, 5))
-        ax2.scatter(y_pred, residuals, s=8, alpha=0.3, edgecolors="none")
-        ax2.axhline(0, color="r", ls="--", lw=1)
-        ax2.set_xlabel("Profit predicho")
-        ax2.set_ylabel("Residuo (real − predicho)")
-        st.pyplot(fig2)
-
-    st.markdown("**Distribución de residuos**")
-    fig3, ax3 = plt.subplots(figsize=(8, 3))
-    ax3.hist(residuals, bins=60)
-    ax3.set_xlabel("Residuo")
-    ax3.set_ylabel("Frecuencia")
-    st.pyplot(fig3)
-
-# --------------------------------------------------------------------------- #
-# 5) Importancia de variables
-# --------------------------------------------------------------------------- #
-with tab_imp:
-    st.markdown("### Importancia de las variables")
-    try:
-        pre = model.named_steps["preprocessor"]
-        reg = model.named_steps["regressor"]
-        feat_names = pre.get_feature_names_out()
-
-        if hasattr(reg, "feature_importances_"):
-            importances = reg.feature_importances_
-            label = "Importancia (impurity-based)"
-        elif hasattr(reg, "coef_"):
-            importances = np.abs(np.ravel(reg.coef_))
-            label = "|Coeficiente| (estandarizado)"
-        else:
-            importances = None
-
-        if importances is None:
-            st.info("El modelo ganador no expone importancias de variables.")
-        else:
-            imp = (
-                pd.DataFrame({"Variable": feat_names, label: importances})
-                .sort_values(label, ascending=False)
-                .head(20)
-                .set_index("Variable")
-            )
-            st.bar_chart(imp)
-            st.caption(f"Top 20 variables más influyentes — {best_name}.")
-    except Exception as exc:  # pragma: no cover - defensivo
-        st.warning(f"No se pudo calcular la importancia de variables: {exc}")
