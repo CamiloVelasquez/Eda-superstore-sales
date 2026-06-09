@@ -476,14 +476,15 @@ with tab_cmp:
         st.info("No hay runs registrados en el experimento.")
     else:
         metric_cols = [c for c in ["metrics.rmse", "metrics.mae", "metrics.r2_score"] if c in runs.columns]
-        table = runs[["params.model_name", *metric_cols]].copy()
-        table.columns = ["Modelo"] + [c.replace("metrics.", "").upper() for c in metric_cols]
+        table = runs[["params.model_name", "start_time", *metric_cols]].copy()
+        table.columns = ["Modelo", "start_time"] + [c.replace("metrics.", "").upper() for c in metric_cols]
         table = (
             table.dropna(subset=["Modelo"])
-            .sort_values("RMSE")
+            .sort_values("start_time", ascending=False)   # más reciente primero
             .groupby("Modelo", sort=False)
-            .first()
+            .first()                                       # run más reciente por modelo
             .reset_index()
+            .drop(columns=["start_time"])
             .sort_values("RMSE")
             .reset_index(drop=True)
         )
