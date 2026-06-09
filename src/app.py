@@ -478,7 +478,15 @@ with tab_cmp:
         metric_cols = [c for c in ["metrics.rmse", "metrics.mae", "metrics.r2_score"] if c in runs.columns]
         table = runs[["params.model_name", *metric_cols]].copy()
         table.columns = ["Modelo"] + [c.replace("metrics.", "").upper() for c in metric_cols]
-        table = table.dropna(subset=["Modelo"]).sort_values("RMSE").reset_index(drop=True)
+        table = (
+            table.dropna(subset=["Modelo"])
+            .sort_values("RMSE")
+            .groupby("Modelo", sort=False)
+            .first()
+            .reset_index()
+            .sort_values("RMSE")
+            .reset_index(drop=True)
+        )
         st.dataframe(table, width="stretch")
 
         if "RMSE" in table.columns:
