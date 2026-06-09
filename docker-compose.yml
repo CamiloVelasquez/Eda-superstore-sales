@@ -17,10 +17,8 @@ services:
       --backend-store-uri sqlite:////mlflow/mlflow.db
       --artifacts-destination /mlflow/artifacts
       --allowed-hosts *
-      --dev
     environment:
-      MLFLOW_ALLOW_ORIGIN_LIST: "http://${PUBLIC_HOST:-localhost}:5000,http://localhost:5000"
-      MLFLOW_TRACKING_SERVER_ALLOW_ORIGINS: "http://${PUBLIC_HOST:-localhost}:5000,http://localhost:5000"
+      MLFLOW_SERVER_DISABLE_SECURITY_MIDDLEWARE: "true"
     ports:
       - "5000:5000"
     volumes:
