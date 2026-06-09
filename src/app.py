@@ -406,7 +406,7 @@ with tab_pred:
                     {
                         "Campo (modelo)":     c,
                         "Campo (formulario)": LABELS_ES.get(c, c),
-                        "Valor":              row.iloc[0][c],
+                        "Valor":              str(row.iloc[0][c]),
                     }
                     for c in row.columns
                 ]
@@ -451,7 +451,7 @@ with tab_batch:
                 m2.metric("MAE", f"{mean_absolute_error(y_real, preds):.2f}")
                 m3.metric("R²", f"{r2_score(y_real, preds):.3f}")
 
-            st.dataframe(result.head(50), use_container_width=True)
+            st.dataframe(result.head(50), width="stretch")
 
             buf = io.StringIO()
             result.to_csv(buf, index=False)
@@ -479,7 +479,7 @@ with tab_cmp:
         table = runs[["params.model_name", *metric_cols]].copy()
         table.columns = ["Modelo"] + [c.replace("metrics.", "").upper() for c in metric_cols]
         table = table.dropna(subset=["Modelo"]).sort_values("RMSE").reset_index(drop=True)
-        st.dataframe(table, use_container_width=True)
+        st.dataframe(table, width="stretch")
 
         if "RMSE" in table.columns:
             colA, colB = st.columns(2)

@@ -115,11 +115,11 @@ def train_and_evaluate(model_name, model, param_distributions, X_train, y_train,
         random_search = RandomizedSearchCV(
             full_pipeline,
             param_distributions,
-            n_iter=10,  # Number of parameter settings that are sampled
-            cv=3,       # Number of folds for cross-validation
+            n_iter=8,
+            cv=2,
             verbose=1,
-            random_state=42,
-            n_jobs=-1   # Use all available cores
+            random_state=0,
+            n_jobs=-1,
         )
         random_search.fit(X_train, y_train)
         best_model = random_search.best_estimator_
@@ -205,23 +205,27 @@ def main():
     results.append(train_and_evaluate("Linear Regression", LinearRegression(), lr_param_dist, X_train, y_train, X_test, y_test))
 
     # --- Random Forest Regressor Model ---
+    # Rangos centrados en los mejores parámetros encontrados: n_estimators=300,
+    # max_features=1.0, max_depth=20, min_samples_split=2, min_samples_leaf=1
     rf_param_dist = {
-        'regressor__n_estimators': [100, 200, 300],
-        'regressor__max_features': ['sqrt', 'log2', 1.0],
-        'regressor__max_depth': [10, 20, 30, None],
-        'regressor__min_samples_split': [2, 5, 10],
-        'regressor__min_samples_leaf': [1, 2, 4]
+        'regressor__n_estimators': [200, 300],
+        'regressor__max_features': ['sqrt', 1.0],
+        'regressor__max_depth': [10, 20],
+        'regressor__min_samples_split': [2, 5],
+        'regressor__min_samples_leaf': [1, 2],
     }
     results.append(train_and_evaluate("Random Forest Regressor", RandomForestRegressor(random_state=42), rf_param_dist, X_train, y_train, X_test, y_test))
 
     # --- Gradient Boosting Regressor Model ---
+    # Rangos centrados en los mejores parámetros encontrados: n_estimators=300,
+    # learning_rate=0.2, max_depth=5, min_samples_split=2, min_samples_leaf=2, subsample=0.9
     gbr_param_dist = {
-        'regressor__n_estimators': [100, 200, 300],
-        'regressor__learning_rate': [0.01, 0.05, 0.1, 0.2],
-        'regressor__max_depth': [3, 5, 8],
-        'regressor__min_samples_split': [2, 5, 10],
-        'regressor__min_samples_leaf': [1, 2, 4],
-        'regressor__subsample': [0.7, 0.8, 0.9, 1.0]
+        'regressor__n_estimators': [200, 300],
+        'regressor__learning_rate': [0.1, 0.2],
+        'regressor__max_depth': [3, 5],
+        'regressor__min_samples_split': [2, 5],
+        'regressor__min_samples_leaf': [1, 2],
+        'regressor__subsample': [0.8, 0.9],
     }
     results.append(train_and_evaluate("Gradient Boosting Regressor", GradientBoostingRegressor(random_state=42), gbr_param_dist, X_train, y_train, X_test, y_test))
 
