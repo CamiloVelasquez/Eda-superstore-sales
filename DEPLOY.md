@@ -1,6 +1,7 @@
 # Despliegue en AWS EC2 con GitHub Actions
 
-Este documento explica cómo crear la infraestructura en AWS y desplegar la aplicación automáticamente usando GitHub Actions.
+Este documento explica cómo crear la infraestructura en AWS y desplegar la aplicación
+automáticamente usando GitHub Actions.
 
 ---
 
@@ -9,34 +10,36 @@ Este documento explica cómo crear la infraestructura en AWS y desplegar la apli
 ```
 GitHub Actions
       │
-      ├─ 1-infra.yml ──► CloudFormation ──► EC2 t3.micro (free tier)
-      │                                      Security Group
-      │                                      Elastic IP
+      ├─ 1-infra.yml ──► CloudFormation ──► EC2 t2.small
+      │                                      Security Group (8501, 5000)
+      │                                      Elastic IP (IP fija)
       │                                      IAM Role (SSM)
-      │                                      Docker + Buildx + Compose (UserData)
       │
       └─ 2-deploy.yml
             │
             ├─ Job 1: build ──► Construye imagen Docker (runner GitHub)
             │                   └── Push → ghcr.io/<repo>:latest (GHCR)
             │
-            └─ Job 2: deploy ─► SSM Run Command ──► docker pull (desde GHCR)
-                                 (sin SSH keys)       docker compose up -d
+            └─ Job 2: deploy ─► SSM Run Command ──► Configura swap 2 GB
+                                 (sin SSH keys)       docker pull (desde GHCR)
+                                                      docker compose up -d
                                                        ├── mlflow    :5000
                                                        └── streamlit :8501
                                                              └── botón "Entrenar"
-                                                                   └── model_pipeline.py
+                                                                   └── src/pipeline.py
 ```
 
-Los workflows se comunican con la EC2 a través de **AWS Systems Manager (SSM)**, sin necesidad de abrir el puerto SSH ni manejar archivos `.pem`.
+Los workflows se comunican con la EC2 a través de **AWS Systems Manager (SSM)**, sin necesidad
+de abrir el puerto SSH ni manejar archivos `.pem`.
 
-La imagen Docker se construye en el **runner de GitHub Actions** (más rápido que la EC2) y se almacena en **GitHub Container Registry (GHCR)**, gratuito para repositorios públicos.
+La imagen Docker se construye en el **runner de GitHub Actions** y se almacena en
+**GitHub Container Registry (GHCR)**, gratuito para repositorios públicos.
 
 ---
 
 ## Prerrequisitos
 
-- Cuenta de AWS activa (free tier disponible los primeros 12 meses)
+- Cuenta de AWS activa
 - Repositorio en GitHub con el código del proyecto
 - Permisos para agregar Secrets en el repositorio
 
@@ -44,12 +47,9 @@ La imagen Docker se construye en el **runner de GitHub Actions** (más rápido q
 
 ## Paso 1 — Crear usuario IAM en AWS
 
-Este usuario será el que GitHub Actions usará para operar en tu cuenta.
-
-1. Inicia sesión en [AWS Console](https://console.aws.amazon.com)
-2. Ve a **IAM → Users → Create user**
-3. Nombre: `github-actions-deploy` (o el que prefieras)
-4. En **Permissions**, selecciona **Attach policies directly** y agrega:
+1. Ve a **IAM → Users → Create user**
+2. Nombre: `github-actions-deploy`
+3. En **Permissions → Attach policies directly**, agrega:
 
 | Política | Para qué se usa |
 |----------|----------------|
@@ -58,9 +58,8 @@ Este usuario será el que GitHub Actions usará para operar en tu cuenta.
 | `IAMFullAccess` | Crear el rol IAM para SSM |
 | `AmazonSSMFullAccess` | Ejecutar comandos en la EC2 sin SSH |
 
-5. Finaliza la creación del usuario
-6. Abre el usuario recién creado → **Security credentials → Create access key**
-7. Selecciona **Application running outside AWS** → guarda el `Access key ID` y el `Secret access key`
+4. Abre el usuario → **Security credentials → Create access key**
+5. Selecciona **Application running outside AWS** → guarda el `Access key ID` y `Secret access key`
 
 > Estos valores solo se muestran una vez. Guárdalos antes de cerrar la ventana.
 
@@ -68,21 +67,15 @@ Este usuario será el que GitHub Actions usará para operar en tu cuenta.
 
 ## Paso 2 — Agregar Secrets en GitHub
 
-1. En tu repositorio, ve a **Settings → Secrets and variables → Actions**
-2. Haz clic en **New repository secret** y agrega los tres siguientes:
+Ve a **Settings → Secrets and variables → Actions → New repository secret**:
 
-| Secret | Valor de ejemplo | Descripción |
-|--------|-----------------|-------------|
-| `AWS_ACCESS_KEY_ID` | `AKIAIOSFODNN7EXAMPLE` | Access Key del usuario IAM |
-| `AWS_SECRET_ACCESS_KEY` | `wJalrXUtnFEMI/K7MDENG/...` | Secret Key del usuario IAM |
-| `AWS_REGION` | `us-east-1` | Región donde se creará la EC2 |
+| Secret | Descripción |
+|--------|-------------|
+| `AWS_ACCESS_KEY_ID` | Access Key del usuario IAM |
+| `AWS_SECRET_ACCESS_KEY` | Secret Key del usuario IAM |
+| `AWS_REGION` | Región donde se creará la EC2 (ej. `us-east-1`) |
 
-> El token para publicar en GHCR (`GITHUB_TOKEN`) es **automático** — GitHub lo genera en cada ejecución del workflow, no necesitas crearlo manualmente.
-
-**Regiones recomendadas (free tier disponible en todas):**
-- `us-east-1` — Norte de Virginia (más recursos gratuitos)
-- `us-west-2` — Oregón
-- `eu-west-1` — Irlanda
+> El token para publicar en GHCR (`GITHUB_TOKEN`) es automático — GitHub lo genera en cada ejecución.
 
 ---
 
@@ -90,11 +83,11 @@ Este usuario será el que GitHub Actions usará para operar en tu cuenta.
 
 Solo se ejecuta **una vez** (o cuando necesites recrearla).
 
-1. En GitHub, ve a **Actions → 1 · Infraestructura (CloudFormation)**
-2. Haz clic en **Run workflow → Run workflow** (acción: `deploy`)
-3. Espera ~2 minutos hasta que termine
+1. En GitHub → **Actions → 1 · Infraestructura (CloudFormation)**
+2. **Run workflow → acción: `deploy`**
+3. Espera ~2 minutos
 
-Al completarse, el resumen del workflow muestra:
+Al completarse, el resumen muestra:
 
 ```
 ✅ Infraestructura lista
@@ -106,52 +99,43 @@ Streamlit   | http://54.12.34.56:8501
 MLflow      | http://54.12.34.56:5000
 ```
 
-> La IP mostrada es fija (Elastic IP) y no cambia aunque la instancia se reinicie.
+> La IP es fija (Elastic IP) y no cambia aunque la instancia se reinicie.
 
 ---
 
 ## Paso 4 — Primer despliegue
 
 ### Opción A: Automático
-Haz cualquier push a la rama `main` y el workflow **2 · Deploy** se ejecuta solo.
-
-```bash
-git add .
-git commit -m "feat: primer deploy"
-git push origin main
-```
+Cualquier push a `main` dispara el workflow **2 · Deploy** automáticamente.
 
 ### Opción B: Manual
 Ve a **Actions → 2 · Deploy a EC2 → Run workflow**.
 
 ### Qué hace el workflow de deploy
 
-**Job 1 — build** (corre en el runner de GitHub Actions):
+**Job 1 — build** (runner de GitHub Actions):
 1. Construye la imagen Docker con todas las dependencias ML
-2. La publica en `ghcr.io/<tu-usuario>/eda-superstore-sales:latest`
-3. Usa caché de capas: si el `Dockerfile` o `pyproject.toml` no cambiaron, reutiliza capas anteriores
+2. La publica en `ghcr.io/<usuario>/eda-superstore-sales:latest`
+3. Usa caché de capas para builds incrementales
 
-**Job 2 — deploy** (corre contra la EC2 via SSM):
-1. Clona o actualiza el repositorio en `/opt/superstore-sales`
-2. Descarga la imagen recién publicada desde GHCR (`docker pull`)
-3. Reinicia los servicios con `docker compose up -d` (sin reconstruir)
-4. Streamlit queda disponible en cuanto MLflow responde al healthcheck
-5. Si no hay modelo entrenado, la app muestra un botón para entrenar desde la interfaz
+**Job 2 — deploy** (EC2 via SSM):
+1. Verifica que el agente SSM esté activo
+2. Configura swap a 2 GB si es menor (mitiga OOM en instancias con poca RAM)
+3. Instala Docker + Compose si no están presentes
+4. Clona o actualiza el repositorio en `/opt/superstore-sales`
+5. Descarga la imagen desde GHCR (`docker pull`)
+6. Reinicia los servicios con `docker compose up -d`
 
 ---
 
 ## Acceder a la aplicación
-
-Una vez completado el deploy:
 
 | Servicio | URL | Descripción |
 |----------|-----|-------------|
 | Streamlit | `http://<IP>:8501` | App de predicción y análisis |
 | MLflow | `http://<IP>:5000` | Experimentos y modelo registrado |
 
-La IP se puede ver en:
-- El resumen del workflow en GitHub Actions
-- AWS Console → EC2 → Elastic IPs
+La IP se puede ver en el resumen del workflow o en **AWS Console → EC2 → Elastic IPs**.
 
 ---
 
@@ -164,77 +148,68 @@ Modificas código
 git push origin main
       │
       ▼
-Job 1: GitHub Actions construye imagen → la sube a GHCR
+Job 1: GitHub Actions construye imagen → sube a GHCR
       │
       ▼
-Job 2: EC2 descarga imagen desde GHCR → reinicia servicios
+Job 2: EC2 descarga imagen → reinicia servicios
       │
       ▼
 App disponible en la misma URL (IP fija)
 ```
 
-Los archivos ignorados por el workflow (no disparan deploy):
+Cambios que **no** disparan deploy automático:
 - `*.md` — documentación
 - `infra/**` — cambios de infraestructura
-- `*.ipynb` — notebooks de análisis
+- `*.ipynb` — notebooks
 
 ---
 
-## Estructura de archivos del deploy
+## Costos
 
-```
-.github/
-  workflows/
-    1-infra.yml       ← Crea/destruye infraestructura (manual)
-    2-deploy.yml      ← Job build (GHCR) + Job deploy (EC2) en push a main
-infra/
-  cloudformation.yml  ← EC2 + SG + Elastic IP + IAM + Docker via UserData
-scripts/
-  setup.sh            ← Referencia: instalación Docker (ya integrada en UserData)
-  deploy.sh           ← Referencia: lógica de deploy (ya integrada en el workflow)
-```
+| Recurso | Costo/mes |
+|---------|-----------|
+| EC2 t2.small | ~$17 |
+| EBS 30 GB gp2 | ~$3 |
+| Elastic IP (activa) | $0 |
+| SSM / CloudFormation | $0 |
+| **Total** | **~$20/mes** |
 
----
-
-## Costos en free tier
-
-| Recurso | Costo | Límite free tier |
-|---------|-------|-----------------|
-| EC2 t3.micro | $0 | 750 h/mes × 12 meses |
-| EBS 30 GB | $0 | 30 GB/mes × 12 meses |
-| Elastic IP | $0 | Gratis mientras la instancia corre |
-| SSM Run Command | $0 | Siempre gratis |
-| CloudFormation | $0 | Siempre gratis |
-| **Total** | **$0/mes** | Durante los primeros 12 meses |
-
-> Después de los 12 meses, el costo aproximado es **$8-10 USD/mes**.
+> t2.small no está en el free tier. Para uso académico puntual, destruye la infraestructura
+> cuando no la uses (`destroy` en el workflow 1).
 
 ---
 
 ## Solución de problemas
 
 ### El workflow falla en "Esperar SSM agent"
-La instancia recién creada tarda ~3 minutos en iniciar el agente SSM. Si falla, vuelve a ejecutar el workflow manualmente desde Actions.
+La instancia tarda ~3 minutos en iniciar el agente SSM. Vuelve a ejecutar el workflow manualmente.
 
 ### "No se encontró el stack"
-El workflow de deploy requiere que la infraestructura exista. Ejecuta primero el **workflow 1** con la acción `deploy`.
+El workflow de deploy requiere que la infraestructura exista. Ejecuta primero el **workflow 1** con `deploy`.
 
 ### Streamlit no carga después del deploy
-Streamlit arranca en cuanto MLflow está sano (~60 s). Si la página no responde, espera un minuto y recarga. También puedes revisar los logs en el resumen del workflow.
+Streamlit arranca en cuanto MLflow está sano (~60 s). Si no responde, espera un minuto y recarga.
 
 ### No hay modelo disponible al entrar a Streamlit
-Es el comportamiento esperado en el primer deploy. La app muestra un botón **"Entrenar modelo ahora"** — haz clic y el pipeline entrenará los 3 modelos (~3-5 minutos) y registrará el mejor en MLflow.
+Es el comportamiento esperado en el primer deploy. La app muestra **"Entrenar modelo ahora"** —
+haz clic y el pipeline entrena los 3 modelos (~5-10 min en t2.small) y registra el mejor.
 
 ### Ver logs en tiempo real
-En AWS Console → Systems Manager → Run Command → historial de comandos. Ahí están los logs completos de cada ejecución.
+Desde AWS Session Manager:
+```bash
+sudo docker logs -f $(sudo docker ps -qf name=streamlit)
+sudo docker logs -f $(sudo docker ps -qf name=mlflow)
+```
 
 ---
 
 ## Destruir la infraestructura
 
-Para eliminar **todos** los recursos de AWS (EC2, IP, etc.):
-
 1. Ve a **Actions → 1 · Infraestructura (CloudFormation)**
-2. Run workflow → acción: `destroy`
+2. **Run workflow → acción: `destroy`**
 
-> Esto libera todos los recursos y detiene cualquier posible cobro.
+El workflow desactiva automáticamente la protección de terminación de la instancia EC2 antes
+de eliminar el stack, por lo que no requiere intervención manual.
+
+> Esto elimina EC2, Elastic IP y Security Group. El volumen EBS se conserva por
+> `DeleteOnTermination: false` — elimínalo manualmente desde EC2 → Volumes si ya no lo necesitas.
