@@ -13,11 +13,11 @@ import pandas as pd
 from mlflow.models import infer_signature
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
-from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import HuberRegressor, LinearRegression
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import RandomizedSearchCV, train_test_split
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.preprocessing import OneHotEncoder, RobustScaler
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -59,13 +59,15 @@ def preprocess_data(df):
     df['Order_Processing_Time'] = (df['Ship Date'] - df['Order Date']).dt.days
     logging.info("Date-based features and order processing time engineered.")
 
-    # Drop unnecessary columns
-    # 'City' se descarta por su alta cardinalidad (542 valores unicos), que infla
-    # el One-Hot Encoding sin aportar senal util; conservamos 'State/Province'.
+    # Drop unnecessary columns.
+    # 'City': alta cardinalidad (542 valores), infla OHE sin aportar señal.
+    # Ship_Year/Month/Day: redundantes con Order_Year/Month + Order_Processing_Time
+    #   (VIF > 4M en análisis de supuestos). Order_Day: r≈0 con Profit y VIF alto.
     columns_to_drop = [
         'Row ID', 'Order ID', 'Customer ID', 'Customer Name',
         'Product ID', 'Product Name', 'Postal Code', 'Order Date', 'Ship Date',
-        'City'
+        'City',
+        'Ship_Year', 'Ship_Month', 'Ship_Day', 'Order_Day',
     ]
     df = df.drop(columns=columns_to_drop, errors='ignore')
     logging.info(f"Dropped columns: {columns_to_drop}")
@@ -88,8 +90,9 @@ def train_and_evaluate(model_name, model, param_distributions, X_train, y_train,
         numerical_cols = X_train.select_dtypes(include=np.number).columns.tolist()
         categorical_cols = X_train.select_dtypes(include='object').columns.tolist()
 
+        # RobustScaler usa IQR en lugar de media/std: menos sensible a outliers extremos.
         numeric_transformer = Pipeline(steps=[
-            ('scaler', StandardScaler())
+            ('scaler', RobustScaler())
         ])
 
         categorical_transformer = Pipeline(steps=[
@@ -198,11 +201,24 @@ def main():
 
     results = []
 
-    # --- Linear Regression Model ---
+    # --- Regresión Lineal (baseline) ---
+    # Se incluye como referencia aunque viola varios supuestos (normalidad de
+    # residuos, homocedasticidad, VIF en fechas). Su RMSE alto sirve para
+    # cuantificar la mejora que aportan los modelos robustos y no lineales.
     lr_param_dist = {
-        'regressor__fit_intercept': [True, False]
+        'regressor__fit_intercept': [True, False],
     }
     results.append(train_and_evaluate("Linear Regression", LinearRegression(), lr_param_dist, X_train, y_train, X_test, y_test))
+
+    # --- Huber Regressor (versión robusta de la regresión lineal) ---
+    # HuberRegressor minimiza una función de pérdida mixta L1/L2 que descarta
+    # outliers extremos, corrigiendo la violación de normalidad y homocedasticidad
+    # detectada en el análisis de supuestos (skewness residuos=15.5, kurtosis=397).
+    hr_param_dist = {
+        'regressor__epsilon': [1.1, 1.35, 1.5, 2.0],   # umbral outlier
+        'regressor__alpha':   [0.0001, 0.001, 0.01],    # regularización L2
+    }
+    results.append(train_and_evaluate("Huber Regressor", HuberRegressor(max_iter=300), hr_param_dist, X_train, y_train, X_test, y_test))
 
     # --- Random Forest Regressor Model ---
     # Rangos centrados en los mejores parámetros encontrados: n_estimators=300,
@@ -216,9 +232,10 @@ def main():
     }
     results.append(train_and_evaluate("Random Forest Regressor", RandomForestRegressor(random_state=42), rf_param_dist, X_train, y_train, X_test, y_test))
 
-    # --- Gradient Boosting Regressor Model ---
-    # Rangos centrados en los mejores parámetros encontrados: n_estimators=300,
-    # learning_rate=0.2, max_depth=5, min_samples_split=2, min_samples_leaf=2, subsample=0.9
+    # --- Gradient Boosting Regressor con pérdida Huber ---
+    # loss='huber' es menos sensible a los outliers extremos del target (18.8% IQR)
+    # que la pérdida cuadrática por defecto: pondera con L2 errores pequeños y con
+    # L1 los grandes, controlado por el parámetro alpha (cuantil de transición).
     gbr_param_dist = {
         'regressor__n_estimators': [200, 300],
         'regressor__learning_rate': [0.1, 0.2],
@@ -226,8 +243,9 @@ def main():
         'regressor__min_samples_split': [2, 5],
         'regressor__min_samples_leaf': [1, 2],
         'regressor__subsample': [0.8, 0.9],
+        'regressor__alpha': [0.85, 0.90, 0.95],
     }
-    results.append(train_and_evaluate("Gradient Boosting Regressor", GradientBoostingRegressor(random_state=42), gbr_param_dist, X_train, y_train, X_test, y_test))
+    results.append(train_and_evaluate("Gradient Boosting Regressor", GradientBoostingRegressor(random_state=42, loss='huber'), gbr_param_dist, X_train, y_train, X_test, y_test))
 
     logging.info("All models trained and evaluated. Check MLflow UI for results.")
 
