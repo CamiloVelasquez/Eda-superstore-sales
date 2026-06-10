@@ -158,9 +158,10 @@ App disponible en la misma URL (IP fija)
 ```
 
 Cambios que **no** disparan deploy automático:
-- `*.md` — documentación
+- `**.md` — documentación
 - `infra/**` — cambios de infraestructura
 - `*.ipynb` — notebooks
+- `.github/workflows/1-infra.yml` — workflow de infraestructura
 
 ---
 
@@ -192,7 +193,7 @@ Streamlit arranca en cuanto MLflow está sano (~60 s). Si no responde, espera un
 
 ### No hay modelo disponible al entrar a Streamlit
 Es el comportamiento esperado en el primer deploy. La app muestra **"Entrenar modelo ahora"** —
-haz clic y el pipeline entrena los 3 modelos (~5-10 min en t2.small) y registra el mejor.
+haz clic y el pipeline entrena los 4 modelos (~3-5 min en t2.small) y registra el mejor.
 
 ### Ver logs en tiempo real
 Desde AWS Session Manager:
